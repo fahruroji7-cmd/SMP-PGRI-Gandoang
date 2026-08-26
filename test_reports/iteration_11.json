@@ -1,0 +1,24 @@
+{
+  "summary": "Narrow retest of iteration-10 CSS bug (.mobile-brand display:none on mobile login). Frontend-only, no backend testing per request. Verified via Playwright computed-style + geometry assertions at 390x844 and 1920x1080, plus a Guru login sanity check. ALL 3 REQUESTED CHECKS PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login desktop 1920x1080", "issues": ["Large empty vertical gap between the brand (top, y=43) and the centered form block in the right white panel - cosmetic only, matches prior iterations, no regression"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "App.css remains a few extremely long minified lines (line 7 media query is ~1.5KB); future cascade/specificity bugs like this one are hard to spot. Consider splitting into readable multi-line/module CSS."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (skipped per request)", "frontend": "100% (3/3 targeted checks)"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin: admin@absenspg.local / Admin123! ; Guru: guru / Guru123!",
+  "context_for_next_testing_agent": "Iteration 11 verified ONLY the mobile-brand CSS fix. Evidence: mobile 390x844 -> getComputedStyle('.mobile-brand').display = 'flex', rect top=28 bottom=74, visible with text 'SMP PGRI Gandoang', logo image loaded (naturalWidth 1338), eyebrow 'RUANG KERJA GURU' starts at top=110.375 so brand is strictly above it, zero overlapping elements detected via bounding-box scan of all .login-page descendants, '.desktop-brand' = none. Desktop 1920 -> '.desktop-brand' display 'flex' at x=1126 inside .login-panel (panel.left=1056, right white panel), '.mobile-brand' = none. Guru login (username 'guru' / Guru123!) succeeded, dashboard title 'Selamat datang, Siti'. Only console noise: two expected 401s from /api/auth/me + permissions before login. All other features remain as PASSED in iterations 8/9/10.",
+  "rca_of_the_issue": "Original defect: '.mobile-brand{display:none}' declared on App.css line 8 (after the max-width:780px media query on line 7) won the cascade due to equal specificity + later source order, so the mobile logo never rendered. Fix applied by main agent raised specificity inside the media query ('.login-visual .mobile-brand{display:flex;margin-bottom:20px}' and '.login-panel .desktop-brand{display:none}'), which now correctly beats the later default rule. Confirmed fixed."
+}

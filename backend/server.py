@@ -35,13 +35,13 @@ ACCESS_MINUTES = 60
 class UserOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
-    email: str
+    username: str
     name: str
     role: Literal["Admin", "Guru"]
 
 
 class LoginInput(BaseModel):
-    email: str
+    username: str = Field(min_length=1, max_length=120)
     password: str = Field(min_length=1, max_length=128)
 
 
@@ -81,6 +81,15 @@ class JournalInput(BaseModel):
     reflection: str = ""
 
 
+class ScheduleInput(BaseModel):
+    day: Literal["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"]
+    start_time: str
+    end_time: str
+    class_name: str
+    subject: str
+    room: str = ""
+
+
 class NameInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
@@ -118,7 +127,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 def make_token(user: dict) -> str:
     payload = {
         "sub": user["id"],
-        "email": user["email"],
+        "username": user["username"],
         "role": user["role"],
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_MINUTES),
         "type": "access",
@@ -127,7 +136,7 @@ def make_token(user: dict) -> str:
 
 
 def public_user(user: dict) -> UserOut:
-    return UserOut(id=str(user["id"]), email=user["email"], name=user["name"], role=user["role"])
+    return UserOut(id=str(user["id"]), username=user["username"], name=user["name"], role=user["role"])
 
 
 async def get_current_user(request: Request) -> dict:
@@ -160,19 +169,25 @@ def require_role(*roles: str):
 
 async def seed_accounts():
     accounts = [
-        ("admin@absenspg.local", "Admin123!", "Ahmad Fauzi", "Admin"),
-        ("guru@absenspg.local", "Guru123!", "Siti Nurhaliza", "Guru"),
+        {"legacy_email": "admin@absenspg.local", "username": "admin@absenspg.local", "password": "Admin123!", "name": "admin", "role": "Admin"},
+        {"legacy_email": "guru@absenspg.local", "username": "guru", "password": "Guru123!", "name": "Siti Nurhaliza", "role": "Guru"},
     ]
-    await db.users.create_index("email", unique=True)
-    for email, password, name, role in accounts:
-        await db.users.update_one(
-            {"email": email},
-            {"$set": {"email": email, "name": name, "role": role}, "$setOnInsert": {"id": str(uuid.uuid4()), "password_hash": hash_password(password), "created_at": datetime.now(timezone.utc).isoformat()}},
-            upsert=True,
-        )
+    try:
+        await db.users.drop_index("email_1")
+    except Exception:
+        pass
+    for acc in accounts:
+        existing = await db.users.find_one({"$or": [{"username": acc["username"]}, {"email": acc["legacy_email"]}]})
+        if existing:
+            await db.users.update_one({"_id": existing["_id"]}, {"$set": {"username": acc["username"], "name": acc["name"], "role": acc["role"]}, "$unset": {"email": ""}})
+        else:
+            await db.users.insert_one({"id": str(uuid.uuid4()), "username": acc["username"], "name": acc["name"], "role": acc["role"], "password_hash": hash_password(acc["password"]), "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.users.create_index("username", unique=True)
 
 
 DEFAULT_SETTINGS = {"school": "SMP PGRI Gandoang", "address": "Jl. Raya Gandoang No. 12", "principal": "Drs. Ahmad Fauzi", "nip": "197001011995011001"}
+DAY_NAMES = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+DAY_ORDER = {name: i for i, name in enumerate(DAY_NAMES)}
 
 
 async def seed_masters():
@@ -202,9 +217,9 @@ async def root():
 
 @api_router.post("/auth/login", response_model=UserOut)
 async def login(payload: LoginInput, response: Response):
-    user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
+    user = await db.users.find_one({"username": payload.username.strip().lower()}, {"_id": 0})
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Email atau password salah")
+        raise HTTPException(status_code=401, detail="Username atau password salah")
     response.set_cookie("access_token", make_token(user), httponly=True, secure=True, samesite="none", max_age=ACCESS_MINUTES * 60, path="/")
     return public_user(user)
 
@@ -248,11 +263,43 @@ async def add_student(payload: StudentInput, user: dict = Depends(require_role("
     return doc
 
 
+@api_router.put("/students/{item_id}")
+async def update_student(item_id: str, payload: StudentInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.students.update_one({"id": item_id}, {"$set": {"name": payload.name.strip(), "class_name": payload.class_name}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Data siswa tidak ditemukan")
+    return {"message": "Data siswa diperbarui"}
+
+
+@api_router.delete("/students/{item_id}")
+async def delete_student(item_id: str, user: dict = Depends(require_role("Admin"))):
+    result = await db.students.delete_one({"id": item_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Data siswa tidak ditemukan")
+    return {"message": "Data siswa dihapus"}
+
+
 @api_router.post("/classes")
 async def add_class(payload: NameInput, user: dict = Depends(require_role("Admin"))):
     doc = {"id": str(uuid.uuid4()), "name": payload.name.strip()}
     await db.classes.insert_one({**doc})
     return doc
+
+
+@api_router.put("/classes/{item_id}")
+async def update_class(item_id: str, payload: NameInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.classes.update_one({"id": item_id}, {"$set": {"name": payload.name.strip()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Data kelas tidak ditemukan")
+    return {"message": "Data kelas diperbarui"}
+
+
+@api_router.delete("/classes/{item_id}")
+async def delete_class(item_id: str, user: dict = Depends(require_role("Admin"))):
+    result = await db.classes.delete_one({"id": item_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Data kelas tidak ditemukan")
+    return {"message": "Data kelas dihapus"}
 
 
 @api_router.post("/subjects")
@@ -262,11 +309,43 @@ async def add_subject(payload: NameInput, user: dict = Depends(require_role("Adm
     return doc
 
 
+@api_router.put("/subjects/{item_id}")
+async def update_subject(item_id: str, payload: NameInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.subjects.update_one({"id": item_id}, {"$set": {"name": payload.name.strip()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Data mapel tidak ditemukan")
+    return {"message": "Data mapel diperbarui"}
+
+
+@api_router.delete("/subjects/{item_id}")
+async def delete_subject(item_id: str, user: dict = Depends(require_role("Admin"))):
+    result = await db.subjects.delete_one({"id": item_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Data mapel tidak ditemukan")
+    return {"message": "Data mapel dihapus"}
+
+
 @api_router.post("/teachers")
 async def add_teacher(payload: NameInput, user: dict = Depends(require_role("Admin"))):
     doc = {"id": str(uuid.uuid4()), "name": payload.name.strip()}
     await db.teachers.insert_one({**doc})
     return doc
+
+
+@api_router.put("/teachers/{item_id}")
+async def update_teacher(item_id: str, payload: NameInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.teachers.update_one({"id": item_id}, {"$set": {"name": payload.name.strip()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    return {"message": "Data guru diperbarui"}
+
+
+@api_router.delete("/teachers/{item_id}")
+async def delete_teacher(item_id: str, user: dict = Depends(require_role("Admin"))):
+    result = await db.teachers.delete_one({"id": item_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    return {"message": "Data guru dihapus"}
 
 
 @api_router.post("/attendance")
@@ -309,6 +388,27 @@ async def list_journals(user: dict = Depends(get_current_user)):
     return await db.journals.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
 
 
+@api_router.get("/schedules")
+async def list_schedules(user: dict = Depends(get_current_user)):
+    rows = await db.schedules.find({}, {"_id": 0}).to_list(500)
+    return sorted(rows, key=lambda r: (DAY_ORDER.get(r["day"], 9), r["start_time"]))
+
+
+@api_router.post("/schedules")
+async def add_schedule(payload: ScheduleInput, user: dict = Depends(get_current_user)):
+    doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "created_by": user["name"]}
+    await db.schedules.insert_one({**doc})
+    return doc
+
+
+@api_router.delete("/schedules/{item_id}")
+async def delete_schedule(item_id: str, user: dict = Depends(get_current_user)):
+    result = await db.schedules.delete_one({"id": item_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Jadwal tidak ditemukan")
+    return {"message": "Jadwal dihapus"}
+
+
 @api_router.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
     return await db.settings.find_one({"id": "school"}, {"_id": 0}) or {"id": "school", **DEFAULT_SETTINGS}
@@ -323,20 +423,64 @@ async def update_settings(payload: SettingsInput, user: dict = Depends(require_r
 STATUS_LABELS = {"H": "Hadir", "S": "Sakit", "I": "Izin", "A": "Alpa"}
 
 
+@api_router.get("/dashboard/stats")
+async def dashboard_stats(user: dict = Depends(get_current_user)):
+    classes = await db.classes.find({}, {"_id": 0}).to_list(200)
+    students = await db.students.find({}, {"_id": 0}).to_list(1000)
+    journals = await db.journals.find({}, {"_id": 0}).to_list(500)
+    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    attendance_docs = await db.attendance.find({"date": {"$regex": f"^{month_prefix}"}}, {"_id": 0}).to_list(500)
+    total_marks = 0
+    present_marks = 0
+    absent_counts: dict[str, dict] = {}
+    for doc in attendance_docs:
+        for e in doc.get("entries", []):
+            total_marks += 1
+            if e["status"] == "H":
+                present_marks += 1
+            if e["status"] == "A":
+                entry = absent_counts.setdefault(e["student"], {"name": e["student"], "class_name": doc["class_name"], "count": 0})
+                entry["count"] += 1
+    attendance_rate = round((present_marks / total_marks) * 100, 1) if total_marks else 0.0
+    top_absent = sorted(absent_counts.values(), key=lambda x: x["count"], reverse=True)[:3]
+    frequent_absent_count = len([x for x in absent_counts.values() if x["count"] >= 3])
+    today_name = DAY_NAMES[datetime.now(timezone.utc).weekday()]
+    today_schedule = await db.schedules.find({"day": today_name}, {"_id": 0}).to_list(50)
+    today_schedule.sort(key=lambda r: r["start_time"])
+    return {
+        "classes_count": len(classes),
+        "students_count": len(students),
+        "attendance_rate": attendance_rate,
+        "journals_count": len(journals),
+        "journals_incomplete": len([j for j in journals if not j.get("reflection", "").strip()]),
+        "top_absent": top_absent,
+        "frequent_absent_count": frequent_absent_count,
+        "today_day": today_name,
+        "today_schedule": today_schedule,
+    }
+
+
 @api_router.get("/reports/rows", response_model=list[ReportRow])
-async def report_rows(kind: str = "attendance", user: dict = Depends(get_current_user)):
+async def report_rows(kind: str = "attendance", class_name: str | None = None, subject: str | None = None, period: str | None = None, user: dict = Depends(get_current_user)):
+    match: dict = {}
+    if class_name:
+        match["class_name"] = class_name
+    if subject:
+        match["subject"] = subject
+    if period:
+        match["date"] = {"$regex": f"^{period}"}
     rows: list[ReportRow] = []
     if kind == "grades":
-        for doc in await db.grades.find({}, {"_id": 0}).sort("date", -1).to_list(200):
+        for doc in await db.grades.find(match, {"_id": 0}).sort("date", -1).to_list(200):
             for e in doc.get("entries", []):
                 score = float(e["score"])
                 predicate = "Sangat baik" if score >= 85 else "Baik" if score >= 75 else "Perlu bimbingan"
                 rows.append(ReportRow(no=len(rows) + 1, student=e["student"], class_name=doc["class_name"], subject=doc["subject"], date=doc["date"], status=predicate, value=f"{score:g}"))
     elif kind == "journals":
-        for doc in await db.journals.find({}, {"_id": 0}).sort("date", -1).to_list(200):
+        for doc in await db.journals.find(match, {"_id": 0}).sort("date", -1).to_list(200):
             rows.append(ReportRow(no=len(rows) + 1, student=doc.get("teacher", user["name"]), class_name=doc["class_name"], subject=doc["subject"], date=doc["date"], status="Tersimpan", value=doc["topic"]))
     else:
-        for doc in await db.attendance.find({}, {"_id": 0}).sort("date", -1).to_list(200):
+        for doc in await db.attendance.find(match, {"_id": 0}).sort("date", -1).to_list(200):
             for e in doc.get("entries", []):
                 label = STATUS_LABELS.get(e["status"], e["status"])
                 rows.append(ReportRow(no=len(rows) + 1, student=e["student"], class_name=doc["class_name"], subject=doc["subject"], date=doc["date"], status=label, value=label))
@@ -344,8 +488,8 @@ async def report_rows(kind: str = "attendance", user: dict = Depends(get_current
 
 
 @api_router.get("/reports/export")
-async def export_report(kind: str = "attendance", user: dict = Depends(get_current_user)):
-    rows = await report_rows(kind, user)
+async def export_report(kind: str = "attendance", class_name: str | None = None, subject: str | None = None, period: str | None = None, user: dict = Depends(get_current_user)):
+    rows = await report_rows(kind, class_name, subject, period, user)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "AbsenSPG"
@@ -362,13 +506,14 @@ async def export_report(kind: str = "attendance", user: dict = Depends(get_curre
 
 
 @api_router.get("/reports/print", response_class=HTMLResponse)
-async def print_report(kind: str = "attendance", user: dict = Depends(get_current_user)):
-    rows = await report_rows(kind, user)
+async def print_report(kind: str = "attendance", class_name: str | None = None, subject: str | None = None, period: str | None = None, user: dict = Depends(get_current_user)):
+    rows = await report_rows(kind, class_name, subject, period, user)
     school = await db.settings.find_one({"id": "school"}, {"_id": 0}) or DEFAULT_SETTINGS
     title = {"attendance": "Rekap Absensi Siswa", "grades": "Rekap Nilai Siswa", "journals": "Rekap Jurnal Mengajar"}.get(kind, "Rekap AbsenSPG")
+    meta_line = f"Kelas: {class_name or 'Semua kelas'} · Mapel: {subject or 'Semua mapel'} · Periode: {period or 'Semua periode'}"
     body = "".join(f"<tr><td>{r.no}</td><td>{r.student}</td><td>{r.class_name}</td><td>{r.subject}</td><td>{r.date}</td><td>{r.status}</td><td>{r.value}</td></tr>" for r in rows) or "<tr><td colspan='7'>Belum ada data tersimpan untuk laporan ini.</td></tr>"
     logo_url = os.environ.get("FRONTEND_URL", "https://educator-dashboard-4.preview.emergentagent.com") + "/logo-smp.png"
-    return HTMLResponse(f"""<!doctype html><html lang='id'><head><meta charset='utf-8'><title>{title}</title><style>body{{font-family:Arial,sans-serif;color:#19342a;padding:36px}}h1{{font-size:22px;margin-bottom:4px}}p{{color:#68776e;font-size:12px}}.head{{display:flex;align-items:center;gap:14px}}table{{width:100%;border-collapse:collapse;margin-top:26px}}th,td{{border:1px solid #cfded3;padding:9px;text-align:left;font-size:12px}}th{{background:#e2f0e8}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>Cetak laporan</button><div class='head'><img src='{logo_url}' alt='Logo sekolah' style='height:72px'><div><h1>{school['school']}</h1><h2 style='margin:4px 0'>{title}</h2><p style='margin:0'>{school['address']} · Disiapkan oleh {user['name']}</p></div></div><table><thead><tr><th>No</th><th>Nama Siswa</th><th>Kelas</th><th>Mapel</th><th>Tanggal</th><th>Status</th><th>Nilai / Materi</th></tr></thead><tbody>{body}</tbody></table></body></html>""")
+    return HTMLResponse(f"""<!doctype html><html lang='id'><head><meta charset='utf-8'><title>{title}</title><style>body{{font-family:Arial,sans-serif;color:#19342a;padding:36px}}h1{{font-size:22px;margin-bottom:4px}}p{{color:#68776e;font-size:12px}}.head{{display:flex;align-items:center;gap:14px}}table{{width:100%;border-collapse:collapse;margin-top:26px}}th,td{{border:1px solid #cfded3;padding:9px;text-align:left;font-size:12px}}th{{background:#e2f0e8}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>Cetak laporan</button><div class='head'><img src='{logo_url}' alt='Logo sekolah' style='height:72px'><div><h1>{school['school']}</h1><h2 style='margin:4px 0'>{title}</h2><p style='margin:0'>{school['address']} · Disiapkan oleh {user['name']}</p><p style='margin:4px 0 0'>{meta_line}</p></div></div><table><thead><tr><th>No</th><th>Nama Siswa</th><th>Kelas</th><th>Mapel</th><th>Tanggal</th><th>Status</th><th>Nilai / Materi</th></tr></thead><tbody>{body}</tbody></table></body></html>""")
 
 
 app.include_router(api_router)

@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 10: Tested the new username-based auth (admin/guru), login form field changes, and mobile/desktop login logo placement. Backend: 15/15 pytest cases pass (admin login with username=admin@absenspg.local -> name 'admin', guru login with plain username 'guru' -> name 'Siti Nurhaliza', legacy email 'guru@absenspg.local' correctly rejected 401 'Username atau password salah', username case-insensitive, httpOnly cookie set, bcrypt $2b$ hashes, users collection migrated (no 'email' field, only username_1 unique index), protected endpoints /api/masters,/api/students,/api/schedules,/api/dashboard/stats,/api/settings all 200 with no _id leakage). Frontend: login form now labeled 'Username', type=text, placeholder 'admin atau username guru', request body uses username; guru login via UI works on mobile, legacy email shows inline error; mobile sidebar + logout still work; desktop login layout unchanged (logo in right white panel). FAILED: on mobile viewport (390x844) the school logo + 'SMP PGRI Gandoang' is NOT displayed at all in the green panel (computed display:none) - the requested feature is not working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/login", "issue": "No brute-force protection/lockout: 6 consecutive wrong-password attempts all return 401 and the 7th correct attempt still succeeds. No rate limiting or account lockout implemented."},
+      {"endpoint": "app.add_middleware(CORSMiddleware)", "issue": "FRONTEND_URL has a hardcoded preview URL fallback in code (line 520). Should read from env only so missing config fails fast."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Login (mobile brand)", "issue": "MOBILE LOGO MISSING: On 390x844 viewport, .mobile-brand computed display is 'none', so logo + 'SMP PGRI Gandoang' never renders above 'RUANG KERJA GURU'. RCA: in /app/frontend/src/App.css the rule '.mobile-brand{display:none}' on line 8 is declared AFTER the @media(max-width:780px) block on line 7 that sets '.mobile-brand{display:flex}'. Media queries add no specificity, so the later flat rule wins at every viewport. Fix: move the default '.mobile-brand{display:none}' declaration BEFORE the max-width:780px media query (or make the media-query rule more specific, e.g. '.login-visual .mobile-brand{display:flex}').", "selector": "[data-testid=\"login-logo-mobile\"] / .mobile-brand", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login mobile", "issues": ["Green hero panel has a large empty area at the top where the logo was expected; no overlap issue, but branding is absent"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_username.py", "/app/test_reports/pytest/pytest_results_iter10.xml", "/app/backend/tests/inspect_users.py"],
+  "action_items": [
+    "Reorder App.css so '.mobile-brand{display:none}' comes before the @media(max-width:780px) block (or increase media-query rule specificity) so the mobile logo + school name actually renders at the top of the green panel above 'RUANG KERJA GURU'.",
+    "Optional: add login rate limiting / lockout after repeated failures.",
+    "Optional: remove the hardcoded FRONTEND_URL fallback in the CORS middleware."
+  ],
+  "critical_code_review_comments": [
+    "CSS cascade bug: flat rules declared after media queries silently override responsive rules - App.css is a single-line minified-style file which makes such ordering bugs easy to introduce; consider splitting/formatting it.",
+    "seed_accounts() migration is idempotent and correctly drops email_1 and creates unique username_1 - verified in DB.",
+    "Login is case-insensitive on username (payload.username.strip().lower()) but seeded usernames are already lowercase - fine, but note stored usernames are not normalized on insert for future user-creation endpoints."
+  ],
+  "updated_files": ["/app/backend/tests/test_auth_username.py", "/app/backend/tests/inspect_users.py"],
+  "success_rate": {"backend": "100%", "frontend": "85%"},
+  "seed_data_creation": "None; used existing seeded admin/guru accounts",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin: admin@absenspg.local / Admin123! (name 'admin'); Guru: guru / Guru123! (name 'Siti Nurhaliza')",
+  "context_for_next_testing_agent": "Auth is fully username-based and verified working end-to-end (pytest file /app/backend/tests/test_auth_username.py, 15 tests). Only open issue is the mobile login logo hidden by CSS ordering in App.css. Desktop login layout verified unchanged. Sidebar scroll/logout regression re-verified on mobile.",
+  "rca_of_the_issue": "The mobile brand block is hidden because '.mobile-brand{display:none}' (App.css line 8) is written after the @media(max-width:780px) rule (line 7) that sets display:flex. Equal specificity + later source order => display:none wins on all viewports, so the logo never appears on mobile. Reproduce: open preview URL at 390x844 and evaluate getComputedStyle(document.querySelector('.mobile-brand')).display -> 'none'."
+}

@@ -1,0 +1,22 @@
+{
+  "summary": "Frontend-only verification of 2 CSS bug fixes. (1) Sidebar overflow-y:auto — at 1366x700 and 1280x720 sidebar scrollHeight=833 > clientHeight, computed overflowY='auto', logout button (data-testid=logout-button) reachable via scroll, fully within viewport, click logged out and returned to login (login-submit-button visible). (2) Mobile login (390x844): .login-brand renders inside .login-panel (brand y=327 within panel y=302..844), no overlap with hero 'RUANG KERJA GURU' block (.visual-copy y=72..229) and no overlap with .login-content (y=384). Regression: 1920x1080 sidebar needs no scroll (scrollHeight==clientHeight==1080), nav-dashboard/nav-jadwal/nav-rekap all navigate correctly (titles: 'Selamat datang, Ahmad', 'Jadwal mengajar', 'Rekap dan cetak'), dashboard stats render real data (4 kelas, 12 siswa, 2 jurnal). Mobile drawer (Guru login) also shows Keluar and logout works. 0 error elements on page.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login (pre-auth)", "issues": ["Two console 401 errors on load from /api/auth/me & permissions probe — expected/harmless but noisy in console"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": ["Optional: suppress expected 401 console noise from initial /api/auth/me session probe on login page"],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100%"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "admin@absenspg.local / Admin123! ; guru@absenspg.local / Guru123!",
+  "context_for_next_testing_agent": "Both CSS fixes verified at 390x844, 1280x720, 1366x700, 1920x1080. Sidebar scroll + logout works for Admin and Guru (mobile drawer too). No JS/logic regressions observed; earlier iteration 8 features (dashboard stats, rekap filters) still render.",
+  "rca_of_the_issue": "Fixes confirmed effective: .sidebar overflow-y:auto restores access to Keluar on short viewports; .login-panel position:relative anchors absolutely-positioned .login-brand inside the white panel on mobile."
+}

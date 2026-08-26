@@ -32,25 +32,27 @@ I created an application in apps script for teacher administration, taking atten
 - (prior fork): Real JWT auth (httpOnly cookies), Admin/Guru roles, seeded accounts, Excel export + print HTML endpoints.
 - 2026-06 (this session): Full MongoDB persistence — attendance (upsert per date/class/subject, round-trip restore), grades (per assessment type), journals (create + saved list), master data create (students/classes/subjects/teachers, Admin-only), school settings GET/PUT, students/masters seed. Reports (rows/Excel/print) now built from REAL DB data. Print header uses saved school settings + logo. Fixed seed so restarts no longer reset passwords. Tested: 61/61 backend pytest + full frontend Playwright pass (iteration_7).
 - 2026-06 (this session): Rebranded AbsenSPG → SMP PGRI Gandoang with official school logo (sidebar, login, report preview, printed report, favicon, page title).
+- 2026-08 (this session): Jadwal Mengajar persisted to MongoDB (GET/POST/DELETE /api/schedules, per day+class, delete w/ confirm). Master data (guru/kelas/siswa/mapel) now has inline Edit + Delete (PUT/DELETE /api/teachers|classes|subjects|students/{id}, Admin-only). Rekap & Cetak filters (kelas/mapel/periode bulan) now actually filter /api/reports/rows|export|print, plus a real (non-mocked) preview chart built from filtered rows. Dashboard stats (kelas/siswa/rata-rata kehadiran/jurnal) and "siswa sering alpa" now computed live from DB via GET /api/dashboard/stats. Tested: 92/92 backend pytest + all frontend flows pass (iteration_8).
+- 2026-08 (this session): Fixed 2 reported bugs — sidebar had no scroll on short viewports, hiding the Keluar/logout button (.sidebar now overflow-y:auto); mobile login logo overlapped the hero text (root cause: absolute positioning with no positioned ancestor). Verified iteration_9.
+- 2026-08 (this session): Auth changed from email-based to username-based login. Admin keeps `admin@absenspg.local` (display name now literally "admin"); Guru now logs in with a plain username `guru` (no email format) — LoginInput/UserOut renamed email→username, users collection migrated (email_1 index dropped, username_1 unique index created, password hashes preserved). Login form relabeled Username/text input. Mobile login logo repositioned to sit above the green "RUANG KERJA GURU" hero (two brand elements: .mobile-brand in the green panel, .desktop-brand in the white panel, toggled via media query) — fixed a CSS specificity bug that hid it initially. Verified iterations 10/11.
 
 ## Prioritized backlog
 
 ### P0
-- (none — core persistence and auth complete)
+- (none — all explicitly requested features complete)
 
 ### P1
-- Schedule (Jadwal) persistence — page is still static/mocked.
-- Edit/Delete for master data (row action buttons are currently no-ops).
-- Wire report class/subject/period filters to API (export/print currently return all rows).
-- Include assessment_type in grades report rows.
-- Real Excel import for grades; login brute-force lockout.
+- Login brute-force lockout (no rate limiting yet).
+- Cascade guard when deleting a class/subject still referenced by students/attendance/grades/journals/schedules.
+- Pagination for /api/reports/* and /api/journals (currently to_list(200)/(100) caps).
+- Real Excel import for grades.
 
 ### P2
-- Report preview panel rendered from /api/reports/rows (currently static bars).
-- Attendance trends/alerts on dashboard (dashboard stats still static).
+- Split App.js into modular components (Dashboard/Reports/Master/Schedule are large single-line components).
 - Real backup jobs; audit history; toast queueing; locale-aware date picker.
+- Split App.css from minified single-line format to avoid future cascade/specificity bugs.
 
 ## Next tasks
-1. Schedule persistence + dashboard stats from real data.
-2. Master data edit/delete.
-3. Report filters (class/subject/period).
+1. Login lockout after repeated failed attempts.
+2. Guard/cascade behavior on class & subject deletion.
+3. Component-level refactor of App.js.

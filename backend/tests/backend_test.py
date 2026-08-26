@@ -297,6 +297,9 @@ class TestReports:
         assert lukman and lukman[0]["status"] == "Perlu bimbingan"
 
     def test_journal_rows(self, guru):
+        # create own journal first: xdist runs classes in parallel, so do not rely on other tests
+        guru.post(f"{BASE_URL}/api/journals", json={"date": "2026-07-02", "period": 2, "class_name": "7A", "subject": "IPA",
+                                                    "topic": f"TEST_topik_{TAG}", "activity": "TEST_kegiatan", "reflection": ""}, timeout=30)
         rows = guru.get(f"{BASE_URL}/api/reports/rows", params={"kind": "journals"}, timeout=30).json()
         assert rows and all(r["status"] == "Tersimpan" for r in rows)
         assert any(TAG in r["value"] for r in rows)
