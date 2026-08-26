@@ -1,0 +1,21 @@
+{
+  "summary": "Completed real-account auth and report API/browser verification. Admin and Guru login, secure session behavior, permissions, all XLSX exports, print HTML, role navigation, and logout passed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Report type selection and export/preview", "issue": "Reports component does not retain the selected report type; both Excel export and preview always call onExport/onPrint with attendance, so grades and journals cannot be exported from the browser.", "affected_selectors": ["[data-testid=report-type-select]", "[data-testid=report-export-button]", "[data-testid=report-preview-button]", "[data-testid=report-print-button]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_real_accounts_reports.py", "/app/test_reports/pytest/real_accounts_reports.xml"],
+  "action_items": ["Wire report-type selection to attendance/grades/journals kind for Excel export, preview, and print actions; add browser coverage for all three kinds."],
+  "critical_code_review_comments": ["Reports UI hardcodes attendance in App.js even though backend supports all requested report kinds."],
+  "updated_files": ["/app/backend/tests/test_real_accounts_reports.py", "/app/test_reports/iteration_4.json"],
+  "success_rate": {"backend": "100%", "frontend": "90%"},
+  "seed_data_creation": "None; used seeded Admin and Guru accounts.",
+  "retest_needed": true,
+  "should_call_test_agent_after_fix": true,
+  "context_for_next_testing_agent": "Public URL tested. Backend suite has 9 passing tests. Browser verified Admin/Guru login, role nav, attendance XLSX download, print popup, and logout. Retest report-type mapping for all three kinds after fix.",
+  "rca of the issue": "Reports receives callbacks that are already bound in App render as onExport={() => downloadReport(\"attendance\")} and onPrint={() => printReport(\"attendance\")}; the select is uncontrolled and has no state/onChange, so its value never reaches the API."
+}

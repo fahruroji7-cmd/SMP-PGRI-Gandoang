@@ -1,0 +1,22 @@
+{
+  "summary": "Backend report/auth regression passed; browser retest found the Reports selector label updates but export and print requests remain hardcoded to attendance.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Report Excel export", "issue": "Selecting grades or journals updates the preview label but clicking export requests /api/reports/export?kind=attendance.", "affected_selectors": ["[data-testid=report-type-select]", "[data-testid=report-export-button]"]},
+      {"flow": "Report print preview", "issue": "Selecting journals and opening print produces attendance HTML (title Rekap Absensi Siswa), not the selected report kind.", "affected_selectors": ["[data-testid=report-type-select]", "[data-testid=report-print-button]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_real_accounts_reports.py", "/app/test_reports/pytest/iteration_5_results.xml"],
+  "action_items": ["Pass the selected kind through App's Reports onExport and onPrint callbacks instead of binding attendance unconditionally."],
+  "critical_code_review_comments": ["App render still uses onExport={() => downloadReport(\"attendance\")} and onPrint={() => printReport(\"attendance\")}; Reports state cannot reach the API."],
+  "updated_files": ["/app/test_reports/iteration_5.json", "/app/test_reports/pytest/iteration_5_results.xml"],
+  "success_rate": {"backend": "100%", "frontend": "50%"},
+  "seed_data_creation": "None; used seeded Admin account.",
+  "retest_needed": true,
+  "should_call_test_agent_after_fix": true,
+  "context_for_next_testing_agent": "Admin login and all 9 backend auth/report tests passed. Browser verified report label changes; grades/journals export and print still request attendance due to parent callback binding.",
+  "rca of the issue": "Reports now owns kind state and passes it to callbacks, but App still supplies callbacks that ignore the argument and always call downloadReport/printReport with attendance. Change callbacks to accept kind and forward it. Browser print title reproduced as Rekap Absensi Siswa after selecting journals."
+}

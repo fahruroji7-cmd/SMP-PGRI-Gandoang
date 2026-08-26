@@ -29,25 +29,28 @@ I created an application in apps script for teacher administration, taking atten
 - 2026-02-01: Added interactive attendance status selection, editable grades, journal forms, report preview, master-data pages, settings, and success feedback.
 - 2026-02-01: Added organic earthy visual system, responsive layout, school metadata, and mobile overflow fix.
 - 2026-02-01: Verified desktop critical flows and 390px mobile navigation/layout.
+- (prior fork): Real JWT auth (httpOnly cookies), Admin/Guru roles, seeded accounts, Excel export + print HTML endpoints.
+- 2026-06 (this session): Full MongoDB persistence — attendance (upsert per date/class/subject, round-trip restore), grades (per assessment type), journals (create + saved list), master data create (students/classes/subjects/teachers, Admin-only), school settings GET/PUT, students/masters seed. Reports (rows/Excel/print) now built from REAL DB data. Print header uses saved school settings + logo. Fixed seed so restarts no longer reset passwords. Tested: 61/61 backend pytest + full frontend Playwright pass (iteration_7).
+- 2026-06 (this session): Rebranded AbsenSPG → SMP PGRI Gandoang with official school logo (sidebar, login, report preview, printed report, favicon, page title).
 
 ## Prioritized backlog
 
 ### P0
-- Connect attendance, grades, journals, schedules, masters, settings, and reports to FastAPI/MongoDB persistence.
-- Replace demo login with role-aware authenticated accounts.
+- (none — core persistence and auth complete)
 
 ### P1
-- Add real Excel import and downloadable XLSX/PDF reports.
-- Add duplicate-entry locks for attendance and grading activities.
-- Add real Google Drive-style manual and automatic backup jobs.
+- Schedule (Jadwal) persistence — page is still static/mocked.
+- Edit/Delete for master data (row action buttons are currently no-ops).
+- Wire report class/subject/period filters to API (export/print currently return all rows).
+- Include assessment_type in grades report rows.
+- Real Excel import for grades; login brute-force lockout.
 
 ### P2
-- Add trend charts and month/semester comparison.
-- Add audit history and bulk editing tools.
-- Add configurable school branding/logo upload.
+- Report preview panel rendered from /api/reports/rows (currently static bars).
+- Attendance trends/alerts on dashboard (dashboard stats still static).
+- Real backup jobs; audit history; toast queueing; locale-aware date picker.
 
 ## Next tasks
-1. Create MongoDB collections and API models for the existing entities.
-2. Wire the React forms and tables to API CRUD endpoints.
-3. Add authenticated Admin and Guru role permissions.
-4. Implement real report export and backup operations.
+1. Schedule persistence + dashboard stats from real data.
+2. Master data edit/delete.
+3. Report filters (class/subject/period).
