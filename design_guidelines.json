@@ -1,0 +1,56 @@
+{
+  "app_type": "dashboard",
+  "theme": "light",
+  "archetype": "ORGANIC & EARTHY",
+  "typography": {
+    "heading": "Manrope",
+    "body": "Inter"
+  },
+  "colors": {
+    "primary": "#0F5132",
+    "primary_hover": "#146c43",
+    "accent": "#D1E7DD",
+    "background": "#F8F9FA",
+    "surface": "#FFFFFF",
+    "border": "#DEE2E6",
+    "text_main": "#212529",
+    "text_muted": "#6C757D"
+  },
+  "visual_enhancers": {
+    "border_radius": "8px",
+    "glassmorphism": "backdrop-blur-xl bg-white/80 border border-white/20",
+    "shadows": "shadow-[0_4px_20px_rgba(15,81,50,0.06)]"
+  },
+  "grids": {
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "tetris_grid": "grid-cols-1 md:grid-cols-12 gap-8"
+  },
+  "motion": {
+    "transition": "transition transform 0.2s ease, opacity 0.2s ease",
+    "hover_lift": "hover:-translate-y-0.5 transition-transform duration-200"
+  },
+  "accessibility": {
+    "contrast_ratio_target": "WCAG AA 4.5:1",
+    "keyboard_navigation": "full",
+    "data_testid_convention": "kebab-case role based"
+  },
+  "image_urls": [
+    {
+      "category": "classroom",
+      "description": "modern minimalist classroom interior",
+      "url": "https://images.unsplash.com/photo-1670924786856-05571994d80c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBoaWdoJTIwc2Nob29lJTIwY2xhc3Nyb29tJTIwbWluaW1hbGlzdCUyMGVkdWNhdGlvbnxlbnwwfHx8fDE3ODc3Mjk0ODd8MA&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "teacher_desk",
+      "description": "clean teacher desk setup with laptop",
+      "url": "https://images.unsplash.com/photo-1758685848122-64a287c1abde?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwxfHxjbGVhbiUyMHRlYWNoZXIlMjBkZXNrJTIwbGFwdG9wJTIwbm90ZWJvb2t8ZW58MHx8fHwxNzg3NzI5NDg3fDA&ixlib=rb-4.1.0&q=85"
+    }
+  ],
+  "instructions_to_main_agent": "Build a stunning, lightning-fast React JS Teacher Administration Dashboard (AbsenSPG / TeacherAdmin Pro) preserving and enhancing all existing features from Apps Script (Attendance with anti-duplicate locks, Grading with formative/sumative categories and Excel import, Class Teaching / Lesson Journal / Jurnal Mengajar, Timetable / Jadwal Mengajar, School Identity settings, Teacher Account Management, Class & Subject management, automated backup triggers, and Report / Rekap exports). Use Tailwind CSS, Shadcn components, lucide-react icons, and Sonner toasts. Ensure data-testid on every interactive element.",
+  "universal_guidelines_for_main_agent": [
+    "Never use pure black or pure white without tinting",
+    "Ensure all interactive elements have data-testid attributes",
+    "Maintain high contrast APCA compliant text",
+    "No transparent dropdown or header backgrounds without backdrop-blur"
+  ]
+}
