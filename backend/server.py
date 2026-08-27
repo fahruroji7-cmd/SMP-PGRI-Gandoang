@@ -12,10 +12,10 @@ from typing import Literal
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
 
@@ -106,6 +106,15 @@ class SettingsInput(BaseModel):
     nip: str
 
 
+class TeacherAccountInput(BaseModel):
+    username: str = Field(min_length=3, max_length=60)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class TeacherPasswordInput(BaseModel):
+    password: str = Field(min_length=6, max_length=128)
+
+
 class ReportRow(BaseModel):
     no: int
     student: str
@@ -170,7 +179,6 @@ def require_role(*roles: str):
 async def seed_accounts():
     accounts = [
         {"legacy_email": "admin@absenspg.local", "username": "admin@absenspg.local", "password": "Admin123!", "name": "admin", "role": "Admin"},
-        {"legacy_email": "guru@absenspg.local", "username": "guru", "password": "Guru123!", "name": "Siti Nurhaliza", "role": "Guru"},
     ]
     try:
         await db.users.drop_index("email_1")
@@ -182,6 +190,7 @@ async def seed_accounts():
             await db.users.update_one({"_id": existing["_id"]}, {"$set": {"username": acc["username"], "name": acc["name"], "role": acc["role"]}, "$unset": {"email": ""}})
         else:
             await db.users.insert_one({"id": str(uuid.uuid4()), "username": acc["username"], "name": acc["name"], "role": acc["role"], "password_hash": hash_password(acc["password"]), "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.users.delete_one({"username": "guru", "teacher_id": {"$exists": False}})
     await db.users.create_index("username", unique=True)
 
 
@@ -337,15 +346,115 @@ async def update_teacher(item_id: str, payload: NameInput, user: dict = Depends(
     result = await db.teachers.update_one({"id": item_id}, {"$set": {"name": payload.name.strip()}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    teacher = await db.teachers.find_one({"id": item_id})
+    if teacher and teacher.get("user_id"):
+        await db.users.update_one({"id": teacher["user_id"]}, {"$set": {"name": payload.name.strip()}})
     return {"message": "Data guru diperbarui"}
 
 
 @api_router.delete("/teachers/{item_id}")
 async def delete_teacher(item_id: str, user: dict = Depends(require_role("Admin"))):
+    teacher = await db.teachers.find_one({"id": item_id})
     result = await db.teachers.delete_one({"id": item_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    if teacher and teacher.get("user_id"):
+        await db.users.delete_one({"id": teacher["user_id"]})
     return {"message": "Data guru dihapus"}
+
+
+@api_router.post("/teachers/{item_id}/account")
+async def create_teacher_account(item_id: str, payload: TeacherAccountInput, user: dict = Depends(require_role("Admin"))):
+    teacher = await db.teachers.find_one({"id": item_id})
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    if teacher.get("user_id"):
+        raise HTTPException(status_code=400, detail="Guru ini sudah memiliki akun login")
+    username = payload.username.strip().lower()
+    if await db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    user_id = str(uuid.uuid4())
+    await db.users.insert_one({"id": user_id, "username": username, "name": teacher["name"], "role": "Guru", "password_hash": hash_password(payload.password), "teacher_id": item_id, "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.teachers.update_one({"id": item_id}, {"$set": {"user_id": user_id, "username": username}})
+    return {"message": "Akun login guru berhasil dibuat", "username": username}
+
+
+@api_router.put("/teachers/{item_id}/account/password")
+async def reset_teacher_password(item_id: str, payload: TeacherPasswordInput, user: dict = Depends(require_role("Admin"))):
+    teacher = await db.teachers.find_one({"id": item_id})
+    if not teacher or not teacher.get("user_id"):
+        raise HTTPException(status_code=404, detail="Guru ini belum memiliki akun login")
+    await db.users.update_one({"id": teacher["user_id"]}, {"$set": {"password_hash": hash_password(payload.password)}})
+    return {"message": "Password guru berhasil diperbarui"}
+
+
+@api_router.post("/teachers/import")
+async def import_teachers(file: UploadFile = File(...), user: dict = Depends(require_role("Admin"))):
+    content = await file.read()
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="File Excel tidak valid") from exc
+    rows = list(workbook.active.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=400, detail="File Excel kosong")
+    headers = [str(h).strip().lower() if h else "" for h in rows[0]]
+    if "nama" not in headers:
+        raise HTTPException(status_code=400, detail="Kolom 'Nama' tidak ditemukan pada baris pertama")
+    name_idx = headers.index("nama")
+    existing_names = {t["name"].strip().lower() for t in await db.teachers.find({}, {"name": 1}).to_list(1000)}
+    docs, imported, skipped = [], 0, 0
+    for row in rows[1:]:
+        name = str(row[name_idx]).strip() if name_idx < len(row) and row[name_idx] else ""
+        if not name:
+            continue
+        if name.lower() in existing_names:
+            skipped += 1
+            continue
+        docs.append({"id": str(uuid.uuid4()), "name": name})
+        existing_names.add(name.lower())
+        imported += 1
+    if docs:
+        await db.teachers.insert_many(docs)
+    return {"imported": imported, "skipped": skipped}
+
+
+@api_router.post("/students/import")
+async def import_students(file: UploadFile = File(...), user: dict = Depends(require_role("Admin"))):
+    content = await file.read()
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="File Excel tidak valid") from exc
+    rows = list(workbook.active.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=400, detail="File Excel kosong")
+    headers = [str(h).strip().lower() if h else "" for h in rows[0]]
+    if "nama" not in headers or "kelas" not in headers:
+        raise HTTPException(status_code=400, detail="Kolom 'Nama' dan 'Kelas' wajib ada pada baris pertama")
+    name_idx, class_idx = headers.index("nama"), headers.index("kelas")
+    valid_classes = {c["name"] for c in await db.classes.find({}, {"name": 1}).to_list(200)}
+    existing_pairs = {(s["name"].strip().lower(), s["class_name"]) for s in await db.students.find({}, {"name": 1, "class_name": 1}).to_list(2000)}
+    docs, imported, skipped, errors = [], 0, 0, []
+    for i, row in enumerate(rows[1:], start=2):
+        name = str(row[name_idx]).strip() if name_idx < len(row) and row[name_idx] else ""
+        class_name = str(row[class_idx]).strip() if class_idx < len(row) and row[class_idx] else ""
+        if not name or not class_name:
+            continue
+        if class_name not in valid_classes:
+            errors.append(f"Baris {i}: kelas '{class_name}' tidak ditemukan")
+            skipped += 1
+            continue
+        key = (name.lower(), class_name)
+        if key in existing_pairs:
+            skipped += 1
+            continue
+        docs.append({"id": str(uuid.uuid4()), "name": name, "class_name": class_name})
+        existing_pairs.add(key)
+        imported += 1
+    if docs:
+        await db.students.insert_many(docs)
+    return {"imported": imported, "skipped": skipped, "errors": errors}
 
 
 @api_router.post("/attendance")
