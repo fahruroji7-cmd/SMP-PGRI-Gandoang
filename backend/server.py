@@ -176,6 +176,17 @@ def require_role(*roles: str):
     return dependency
 
 
+async def ensure_own_class_subject(user: dict, class_name: str, subject: str):
+    # Admin boleh akses kelas & mapel apa saja (untuk keperluan pengecekan/oversight).
+    # Guru hanya boleh akses kombinasi kelas+mapel yang benar-benar ada di Jadwal Mengajar miliknya sendiri --
+    # jadi tidak bisa mengintip atau mengirim data untuk kelas yang bukan diampunya, sekalipun lewat panggilan API langsung.
+    if user["role"] == "Admin":
+        return
+    exists = await db.schedules.find_one({"created_by": user["name"], "class_name": class_name, "subject": subject})
+    if not exists:
+        raise HTTPException(status_code=403, detail="Anda tidak mengampu kelas/mapel ini sesuai jadwal mengajar Anda")
+
+
 async def seed_accounts():
     accounts = [
         {"legacy_email": "admin@absenspg.local", "username": "admin@absenspg.local", "password": "Admin123!", "name": "admin", "role": "Admin"},
@@ -459,6 +470,7 @@ async def import_students(file: UploadFile = File(...), user: dict = Depends(req
 
 @api_router.post("/attendance")
 async def save_attendance(payload: AttendanceInput, user: dict = Depends(get_current_user)):
+    await ensure_own_class_subject(user, payload.class_name, payload.subject)
     key = {"date": payload.date, "class_name": payload.class_name, "subject": payload.subject}
     update = {"entries": [e.model_dump() for e in payload.entries], "recorded_by": user["name"], "updated_at": datetime.now(timezone.utc).isoformat()}
     await db.attendance.update_one(key, {"$set": update, "$setOnInsert": {"id": str(uuid.uuid4()), **key}}, upsert=True)
@@ -467,12 +479,14 @@ async def save_attendance(payload: AttendanceInput, user: dict = Depends(get_cur
 
 @api_router.get("/attendance")
 async def get_attendance(date: str, class_name: str, subject: str, user: dict = Depends(get_current_user)):
+    await ensure_own_class_subject(user, class_name, subject)
     doc = await db.attendance.find_one({"date": date, "class_name": class_name, "subject": subject}, {"_id": 0})
     return doc or {"date": date, "class_name": class_name, "subject": subject, "entries": []}
 
 
 @api_router.post("/grades")
 async def save_grades(payload: GradesInput, user: dict = Depends(get_current_user)):
+    await ensure_own_class_subject(user, payload.class_name, payload.subject)
     key = {"date": payload.date, "class_name": payload.class_name, "subject": payload.subject, "assessment_type": payload.assessment_type}
     update = {"entries": [e.model_dump() for e in payload.entries], "recorded_by": user["name"], "updated_at": datetime.now(timezone.utc).isoformat()}
     await db.grades.update_one(key, {"$set": update, "$setOnInsert": {"id": str(uuid.uuid4()), **key}}, upsert=True)
@@ -481,12 +495,14 @@ async def save_grades(payload: GradesInput, user: dict = Depends(get_current_use
 
 @api_router.get("/grades")
 async def get_grades(date: str, class_name: str, subject: str, assessment_type: str, user: dict = Depends(get_current_user)):
+    await ensure_own_class_subject(user, class_name, subject)
     doc = await db.grades.find_one({"date": date, "class_name": class_name, "subject": subject, "assessment_type": assessment_type}, {"_id": 0})
     return doc or {"date": date, "class_name": class_name, "subject": subject, "assessment_type": assessment_type, "entries": []}
 
 
 @api_router.post("/journals")
 async def save_journal(payload: JournalInput, user: dict = Depends(get_current_user)):
+    await ensure_own_class_subject(user, payload.class_name, payload.subject)
     doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "teacher": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
     await db.journals.insert_one({**doc})
     return doc
@@ -494,12 +510,16 @@ async def save_journal(payload: JournalInput, user: dict = Depends(get_current_u
 
 @api_router.get("/journals")
 async def list_journals(user: dict = Depends(get_current_user)):
-    return await db.journals.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    # Guru hanya melihat jurnal miliknya sendiri; Admin melihat semua (untuk keperluan pengecekan/oversight).
+    query = {} if user["role"] == "Admin" else {"teacher": user["name"]}
+    return await db.journals.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
 
 
 @api_router.get("/schedules")
 async def list_schedules(user: dict = Depends(get_current_user)):
-    rows = await db.schedules.find({}, {"_id": 0}).to_list(500)
+    # Guru hanya melihat jadwal miliknya sendiri; Admin melihat semua (untuk keperluan pengecekan/oversight).
+    query = {} if user["role"] == "Admin" else {"created_by": user["name"]}
+    rows = await db.schedules.find(query, {"_id": 0}).to_list(500)
     return sorted(rows, key=lambda r: (DAY_ORDER.get(r["day"], 9), r["start_time"]))
 
 
@@ -512,7 +532,8 @@ async def add_schedule(payload: ScheduleInput, user: dict = Depends(get_current_
 
 @api_router.delete("/schedules/{item_id}")
 async def delete_schedule(item_id: str, user: dict = Depends(get_current_user)):
-    result = await db.schedules.delete_one({"id": item_id})
+    query = {"id": item_id} if user["role"] == "Admin" else {"id": item_id, "created_by": user["name"]}
+    result = await db.schedules.delete_one(query)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Jadwal tidak ditemukan")
     return {"message": "Jadwal dihapus"}
@@ -572,10 +593,24 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 @api_router.get("/reports/rows", response_model=list[ReportRow])
 async def report_rows(kind: str = "attendance", class_name: str | None = None, subject: str | None = None, period: str | None = None, user: dict = Depends(get_current_user)):
     match: dict = {}
-    if class_name:
-        match["class_name"] = class_name
-    if subject:
-        match["subject"] = subject
+    if user["role"] != "Admin":
+        # Guru cuma boleh melihat rekap kelas & mapel yang ada di Jadwal Mengajar miliknya sendiri.
+        # Kalau tidak pilih kelas/mapel spesifik ("Semua kelas"/"Semua mapel"), dibatasi ke gabungan
+        # kelas/mapel yang dia ampu -- bukan seluruh sekolah.
+        my_schedules = await db.schedules.find({"created_by": user["name"]}, {"class_name": 1, "subject": 1}).to_list(500)
+        my_classes = sorted({s["class_name"] for s in my_schedules})
+        my_subjects = sorted({s["subject"] for s in my_schedules})
+        if class_name and class_name not in my_classes:
+            raise HTTPException(status_code=403, detail="Anda tidak mengampu kelas ini")
+        if subject and subject not in my_subjects:
+            raise HTTPException(status_code=403, detail="Anda tidak mengampu mata pelajaran ini")
+        match["class_name"] = class_name if class_name else {"$in": my_classes or [""]}
+        match["subject"] = subject if subject else {"$in": my_subjects or [""]}
+    else:
+        if class_name:
+            match["class_name"] = class_name
+        if subject:
+            match["subject"] = subject
     if period:
         match["date"] = {"$regex": f"^{period}"}
     rows: list[ReportRow] = []
