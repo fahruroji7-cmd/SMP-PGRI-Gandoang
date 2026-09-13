@@ -534,11 +534,6 @@ async def logout(response: Response):
     return {"message": "Logged out"}
 
 
-@api_router.get("/auth/permissions")
-async def permissions(user: dict = Depends(get_current_user)):
-    return {"role": user["role"], "admin": user["role"] == "Admin", "can_manage_master_data": user["role"] == "Admin", "can_teach": True}
-
-
 @api_router.get("/masters")
 async def masters(user: dict = Depends(get_current_user)):
     return {
@@ -1241,11 +1236,6 @@ async def delete_sekretaris_account(item_id: str, user: dict = Depends(require_r
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Akun sekretaris tidak ditemukan")
     return {"message": "Akun sekretaris dihapus"}
-
-
-@api_router.get("/my-homeroom")
-async def get_my_homeroom(user: dict = Depends(get_current_user)):
-    return {"class_name": await get_homeroom_class(user)}
 
 
 # ================= MODUL TATA USAHA (TU) =================
