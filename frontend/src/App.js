@@ -20,32 +20,33 @@ const NAV = [
   { id: "rekap", label: "Rekap & Cetak", icon: Printer },
 ];
 const ADMIN_NAV_GROUPS = [
-  { label: "Data Master", items: [
+  { label: "Data Master", icon: School, items: [
     { id: "guru", label: "Kelola Guru", icon: Users },
     { id: "kelas", label: "Kelola Kelas", icon: School },
     { id: "siswa", label: "Kelola Siswa", icon: Users },
     { id: "mapel", label: "Kelola Mapel", icon: BookOpen },
     { id: "rekap", label: "Rekap & Cetak", icon: Printer },
   ] },
-  { label: "Ekstrakurikuler", items: [
+  { label: "Ekstrakurikuler", icon: Trophy, items: [
     { id: "ekskul", label: "Kelola Ekskul", icon: Trophy },
     { id: "ekskul-rekap", label: "Rekap Ekskul", icon: BarChart3 },
   ] },
-  { label: "Piket", items: [
+  { label: "Piket", icon: ClipboardCheck, items: [
     { id: "guru-piket", label: "Guru Piket", icon: UserCheck },
     { id: "beban-mengajar", label: "Beban Mengajar", icon: ListChecks },
     { id: "akun-piket", label: "Akun Piket", icon: IdCard },
     { id: "rekap-piket", label: "Rekap Piket", icon: BarChart3 },
+    { id: "laporan-guru", label: "Laporan Jam Berdiri", icon: FileDown },
   ] },
-  { label: "Wali Kelas", items: [
+  { label: "Wali Kelas", icon: UserRound, items: [
     { id: "wali-kelas-admin", label: "Wali Kelas", icon: UserRound },
     { id: "akun-sekretaris", label: "Akun Sekretaris Kelas", icon: ClipboardList },
     { id: "rekap-absen-harian", label: "Rekap Absen Kelas", icon: BarChart3 },
   ] },
-  { label: "Tata Usaha", items: [
+  { label: "Tata Usaha", icon: Contact, items: [
     { id: "akun-tu", label: "Akun Tata Usaha", icon: Contact },
   ] },
-  { label: "Sistem", items: [
+  { label: "Sistem", icon: Settings, items: [
     { id: "pengaturan", label: "Pengaturan", icon: Settings },
   ] },
 ];
@@ -118,6 +119,12 @@ function App() {
 
   const showToast = (message) => { setToast(message); window.setTimeout(() => setToast(""), 2600); };
   const navigate = (id) => { setActive(id); setMobileOpen(false); const grp = ADMIN_NAV_GROUPS.find((g) => g.items.some((i) => i.id === id)); if (grp) setOpenAdminGroups((prev) => new Set(prev).add(grp.label)); };
+  const isHomeroom = user?.role === "Guru" && masters?.teachers?.find((t) => t.name === user.name)?.homeroom_class;
+  const searchableNav = user?.role === "Admin"
+    ? [NAV.find((n) => n.id === "dashboard"), ...ADMIN_NAV]
+    : [...NAV, ...(isHomeroom ? [{ id: "wali-kelas", label: "Wali Kelas", icon: UserRound }] : [])];
+  const [attendancePrefill, setAttendancePrefill] = useState(null);
+  const goToAttendance = (classNameVal, subjectVal) => { setAttendancePrefill({ className: classNameVal, subject: subjectVal }); navigate("absensi"); };
   const downloadReport = async (kind, filters = {}) => {
     try {
       const params = new URLSearchParams({ kind, ...filters });
@@ -186,6 +193,7 @@ function App() {
     return acc;
   }, {});
   const ready = isAdmin ? (classNames.length > 0 && subjectNames.length > 0) : myClassNames.length > 0;
+  const scheduleReady = classNames.length > 0 && subjectNames.length > 0;
   const loadingPanel = <div className="session-loading" data-testid="masters-loading">Memuat data sekolah...</div>;
 
   return (
@@ -196,19 +204,19 @@ function App() {
         <nav className="nav-list" aria-label="Navigasi utama">
           <div className="nav-caption">Workspace</div>
           {(user?.role === "Admin" ? NAV.filter((item) => item.id === "dashboard") : NAV).map((item) => <NavItem key={item.id} item={item} active={active} onClick={navigate} />)}
-          {user?.role === "Guru" && masters?.teachers?.find((t) => t.name === user.name)?.homeroom_class && <NavItem item={{ id: "wali-kelas", label: "Wali Kelas", icon: UserRound }} active={active} onClick={navigate} />}
-          {user?.role === "Admin" && ADMIN_NAV_GROUPS.map((group) => <Fragment key={group.label}><button type="button" className="nav-caption admin-caption admin-caption-toggle" onClick={() => toggleAdminGroup(group.label)}>{group.label}<ChevronDown size={12} className={`caption-chevron ${openAdminGroups.has(group.label) ? "open" : ""}`} /></button>{openAdminGroups.has(group.label) && group.items.map((item) => <NavItem key={item.id} item={item} active={active} onClick={navigate} />)}</Fragment>)}
+          {isHomeroom && <NavItem item={{ id: "wali-kelas", label: "Wali Kelas", icon: UserRound }} active={active} onClick={navigate} />}
+          {user?.role === "Admin" && ADMIN_NAV_GROUPS.map((group) => <Fragment key={group.label}><button type="button" className="nav-caption admin-caption admin-caption-toggle" onClick={() => toggleAdminGroup(group.label)}><span className="admin-caption-label"><group.icon size={16} />{group.label}</span><ChevronDown size={12} className={`caption-chevron ${openAdminGroups.has(group.label) ? "open" : ""}`} /></button>{openAdminGroups.has(group.label) && group.items.map((item) => <NavItem key={item.id} item={item} active={active} onClick={navigate} />)}</Fragment>)}
         </nav>
         <div className="sidebar-bottom"><div className="backup-chip"><span className="pulse-dot" /> Backup otomatis aktif <ChevronDown size={14} /></div><button className="logout-button" data-testid="logout-button" onClick={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }}><LogOut size={16} /> Keluar</button></div>
       </aside>
       {mobileOpen && <button className="mobile-scrim" data-testid="mobile-menu-close" onClick={() => setMobileOpen(false)} aria-label="Tutup menu" />}
       <main className="main-content">
-        <header className="topbar"><button className="icon-button mobile-menu-button" data-testid="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>{settings?.school || "SMP PGRI Gandoang"}</span><ArrowRight size={14} /><strong>{NAV.concat(ADMIN_NAV).find((n) => n.id === active)?.label || "Dashboard"}</strong></div><div className="top-actions"><button className="icon-button" data-testid="global-search-button" aria-label="Cari"><Search size={18} /></button><div className="date-badge" data-testid="today-date"><CalendarDays size={15} /> {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div><div className="mini-avatar">{user?.name ? initials(user.name) : "AF"}</div></div></header>
+        <header className="topbar"><button className="icon-button mobile-menu-button" data-testid="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>{settings?.school || "SMP PGRI Gandoang"}</span><ArrowRight size={14} /><strong>{NAV.concat(ADMIN_NAV).find((n) => n.id === active)?.label || "Dashboard"}</strong></div><div className="top-actions"><GlobalSearch navItems={searchableNav} students={masters?.students} teachers={masters?.teachers} canSearchData={user?.role === "Admin"} onNavigate={navigate} /><div className="date-badge" data-testid="today-date"><CalendarDays size={15} /> {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div><div className="mini-avatar">{user?.name ? initials(user.name) : "AF"}</div></div></header>
         <div className="page-wrap">
-          {active === "dashboard" && (user?.role === "Admin" ? <AdminDashboard navigate={navigate} user={user} /> : <Dashboard navigate={navigate} user={user} stats={stats} />)}
-          {active === "absensi" && (ready ? <Attendance classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} /> : loadingPanel)}
+          {active === "dashboard" && (user?.role === "Admin" ? <AdminDashboard navigate={navigate} user={user} /> : <Dashboard navigate={navigate} user={user} stats={stats} onMarkAttendance={goToAttendance} />)}
+          {active === "absensi" && (ready ? <Attendance classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} prefill={attendancePrefill} onConsumePrefill={() => setAttendancePrefill(null)} /> : loadingPanel)}
           {active === "nilai" && (ready ? <Grades classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} /> : loadingPanel)}
-          {active === "jadwal" && (ready ? <Schedule classes={classNames} subjects={subjectNames} showToast={showToast} onSaved={loadMySchedules} /> : loadingPanel)}
+          {active === "jadwal" && (scheduleReady ? <Schedule classes={classNames} subjects={subjectNames} showToast={showToast} onSaved={loadMySchedules} /> : loadingPanel)}
           {active === "jurnal" && (ready ? <Journal classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} /> : loadingPanel)}
           {active === "rekap" && <Reports onExport={downloadReport} onPrint={printReport} classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} />}
           {active === "wali-kelas" && <WaliKelasPage showToast={showToast} homeroomClass={masters?.teachers?.find((t) => t.name === user.name)?.homeroom_class} />}
@@ -220,6 +228,7 @@ function App() {
           {active === "beban-mengajar" && masters && <BebanMengajarAdmin showToast={showToast} classes={classNames} subjects={subjectNames} />}
           {active === "akun-piket" && <PiketAccountsAdmin showToast={showToast} />}
           {active === "rekap-piket" && <PiketRekap showToast={showToast} />}
+          {active === "laporan-guru" && <LaporanPage showToast={showToast} />}
           {active === "wali-kelas-admin" && masters && <WaliKelasAdmin showToast={showToast} teachers={masters.teachers} classes={classNames} onReload={loadMasters} />}
           {active === "akun-sekretaris" && <SekretarisAccountsAdmin showToast={showToast} classes={classNames} />}
           {active === "rekap-absen-harian" && <DailyAttendanceRekap showToast={showToast} classes={classNames} />}
@@ -234,8 +243,37 @@ function App() {
   );
 }
 
-function Login({ onLogin }) { const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false); const submit = async (e) => { e.preventDefault(); setError(""); if (!username || !password) return setError("Username dan password wajib diisi."); setLoading(true); try { const { data } = await axios.post(`${API}/auth/login`, { username, password }); onLogin(data); } catch (err) { setError(errMsg(err, "Username atau password salah.")); } finally { setLoading(false); } }; return <div className="login-page"><div className="login-visual"><div className="login-brand mobile-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo-mobile" /><span>SMP PGRI Gandoang</span></div><div className="visual-copy"><span className="eyebrow"><Sparkles size={14} /> Ruang kerja guru</span><h1>Semua kelas.<br /><em>Satu kendali.</em></h1><p>Kelola kehadiran, nilai, jadwal, dan jurnal pembelajaran dengan lebih tenang.</p></div><div className="visual-footer">SMP PGRI Gandoang <span>•</span> Teacher Administration</div></div><div className="login-panel"><div className="login-brand desktop-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo" /><span>SMP PGRI Gandoang</span></div><div className="login-content"><span className="eyebrow">Selamat datang kembali</span><h2>Masuk ke ruang kerja</h2><p className="muted">Gunakan username guru atau administrator Anda.</p><form onSubmit={submit}><label>Username<input data-testid="login-username-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin atau username guru" /></label><label>Password<input data-testid="login-password-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Masukkan password" /></label>{error && <div className="form-error" data-testid="login-error">{error}</div>}<button className="primary-button login-submit" data-testid="login-submit-button" disabled={loading}>{loading ? "Memeriksa akun..." : "Masuk ke dashboard"} {!loading && <ArrowRight size={17} />}</button></form><p className="login-note">Admin: admin@absenspg.local · Guru: gunakan username yang diberikan admin sekolah</p></div></div></div>; }
+function Login({ onLogin }) { const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false); const submit = async (e) => { e.preventDefault(); setError(""); if (!username || !password) return setError("Username dan password wajib diisi."); setLoading(true); try { const { data } = await axios.post(`${API}/auth/login`, { username, password }); onLogin(data); } catch (err) { setError(errMsg(err, "Username atau password salah.")); } finally { setLoading(false); } }; return <div className="login-page"><div className="login-visual"><div className="login-brand mobile-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo-mobile" /><span>SMP PGRI Gandoang</span></div><div className="visual-copy"><span className="eyebrow"><Sparkles size={14} /> Sistem Informasi Sekolah</span><h1>Satu portal,<br /><em>untuk seluruh sekolah.</em></h1><p>Absensi, nilai, jadwal, piket, dan administrasi sekolah &mdash; dalam satu tempat.</p></div><div className="visual-footer">SMP PGRI Gandoang <span>•</span> Sistem Informasi Akademik</div></div><div className="login-panel"><div className="login-brand desktop-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo" /><span>SMP PGRI Gandoang</span></div><div className="login-content"><span className="eyebrow">Selamat datang kembali</span><h2>Masuk ke akun Anda</h2><p className="muted">Masuk dengan akun yang terdaftar di sekolah.</p><form onSubmit={submit}><label>Username<input data-testid="login-username-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Masukkan username Anda" /></label><label>Password<input data-testid="login-password-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Masukkan password" /></label>{error && <div className="form-error" data-testid="login-error">{error}</div>}<button className="primary-button login-submit" data-testid="login-submit-button" disabled={loading}>{loading ? "Memeriksa akun..." : "Masuk ke dashboard"} {!loading && <ArrowRight size={17} />}</button></form><p className="login-note">Belum punya akun? Hubungi admin sekolah Anda.</p></div></div></div>; }
 function NavItem({ item, active, onClick }) { const Icon = item.icon; return <button className={`nav-item ${active === item.id ? "active" : ""}`} data-testid={`nav-${item.id}`} onClick={() => onClick(item.id)}><Icon size={17} /><span>{item.label}</span>{active === item.id && <span className="nav-active-dot" />}</button>; }
+
+function GlobalSearch({ navItems, students, teachers, canSearchData, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef = useRef(null);
+  useEffect(() => {
+    const onDocClick = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+  const q = query.trim().toLowerCase();
+  const menuResults = q ? navItems.filter((n) => n.label.toLowerCase().includes(q)).slice(0, 6) : [];
+  const studentResults = q && canSearchData ? (students || []).filter((s) => s.name.toLowerCase().includes(q)).slice(0, 5) : [];
+  const teacherResults = q && canSearchData ? (teachers || []).filter((t) => t.name.toLowerCase().includes(q)).slice(0, 5) : [];
+  const hasResults = menuResults.length || studentResults.length || teacherResults.length;
+  const go = (id) => { onNavigate(id); setOpen(false); setQuery(""); };
+  return (
+    <div className="global-search" ref={wrapRef}>
+      <button className="icon-button" data-testid="global-search-button" aria-label="Cari" onClick={() => setOpen((o) => !o)}><Search size={18} /></button>
+      {open && <div className="global-search-panel" data-testid="global-search-panel">
+        <div className="global-search-input"><Search size={15} /><input autoFocus data-testid="global-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari menu, siswa, atau guru..." /></div>
+        {q && !hasResults && <div className="global-search-empty">Tidak ada hasil untuk &quot;{query}&quot;</div>}
+        {menuResults.length > 0 && <div className="global-search-group"><span>Menu</span>{menuResults.map((n) => { const Icon = n.icon; return <button key={n.id} className="global-search-item" onClick={() => go(n.id)}><Icon size={15} />{n.label}</button>; })}</div>}
+        {studentResults.length > 0 && <div className="global-search-group"><span>Siswa</span>{studentResults.map((s) => <button key={s.id} className="global-search-item" onClick={() => go("siswa")}><Users size={15} />{s.name}<em>{s.class_name}</em></button>)}</div>}
+        {teacherResults.length > 0 && <div className="global-search-group"><span>Guru</span>{teacherResults.map((t) => <button key={t.id} className="global-search-item" onClick={() => go("guru")}><Users size={15} />{t.name}</button>)}</div>}
+      </div>}
+    </div>
+  );
+}
 function PageTitle({ eyebrow, title, description, action }) { return <div className="page-title"><div><span className="eyebrow">{eyebrow}</span><h1 data-testid="page-title">{title}</h1><p>{description}</p></div>{action}</div>; }
 function AdminDashboard({ navigate, user }) {
   const [s, setS] = useState(null);
@@ -292,26 +330,32 @@ function AdminDashboard({ navigate, user }) {
   </>;
 }
 
-function Dashboard({ navigate, user, stats }) {
+function Dashboard({ navigate, user, stats, onMarkAttendance }) {
   const s = stats || {};
   const rate = s.attendance_rate !== undefined ? `${String(s.attendance_rate).replace(".", ",")}%` : "—";
   const todaySchedule = s.today_schedule || [];
   const topAbsent = s.top_absent || [];
-  return <><PageTitle eyebrow={new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} title={`Selamat datang, ${user?.name?.split(" ")[0] || "Guru"}`} description="Berikut ringkasan kegiatan mengajar Anda hari ini." action={<button className="primary-button" data-testid="dashboard-attendance-cta" onClick={() => navigate("absensi")}><CheckSquare size={17} /> Isi absensi</button>} /><div className="stat-grid"><Stat label="Kelas diampu" value={s.classes_count ?? "—"} change="Total kelas terdaftar" icon={School} color="green" /><Stat label="Siswa aktif" value={s.students_count ?? "—"} change="Total siswa terdaftar" icon={Users} color="amber" /><Stat label="Rata-rata kehadiran" value={rate} change="Bulan ini" icon={BarChart3} color="blue" /><Stat label="Jurnal tersimpan" value={s.journals_count ?? "—"} change={`${s.journals_incomplete ?? 0} perlu dilengkapi`} icon={BookMarked} color="rose" /></div><div className="dashboard-grid"><section className="panel schedule-panel"><PanelHeading title="Jadwal hari ini" subtitle={s.today_day || ""} action={<button className="text-button" data-testid="dashboard-schedule-link" onClick={() => navigate("jadwal")}>Lihat semua <ArrowRight size={14} /></button>} /><div className="timeline">{todaySchedule.map((item, i) => <TimelineItem key={item.id || i} time={`${item.start_time} — ${item.end_time}`} classNameName={item.class_name} subject={item.subject} room={item.room || "-"} active={i === 0} />)}{!todaySchedule.length && <p className="muted" data-testid="dashboard-schedule-empty">Tidak ada jadwal untuk hari ini.</p>}</div></section><section className="panel attention-panel"><PanelHeading title="Perlu perhatian" subtitle="Absensi bulan ini" action={<AlertTriangle size={18} className="warning-icon" />} /><div className="attention-callout"><div className="attention-number" data-testid="dashboard-frequent-absent-count">{s.frequent_absent_count ?? 0}</div><div><strong>siswa sering tidak hadir</strong><p>3 kali atau lebih alpa bulan ini</p></div></div>{topAbsent.map((item) => <div className="attention-row" key={item.name}><div className="student-avatar">{initials(item.name)}</div><span>{item.name}</span><b>{item.count}x alpa</b></div>)}{!topAbsent.length && <p className="muted" data-testid="dashboard-attention-empty">Belum ada data alpa bulan ini.</p>}<button className="outline-button" data-testid="view-attention-button" onClick={() => navigate("rekap")}>Buka rekap absensi <ArrowRight size={15} /></button></section></div><section className="quick-section"><div className="section-heading"><div><span className="eyebrow">Akses cepat</span><h2>Mulai dari sini</h2></div><span className="muted">Pekerjaan rutin Anda, lebih ringkas.</span></div><div className="quick-grid"><QuickAction icon={CheckSquare} title="Absensi siswa" text="Catat kehadiran kelas" onClick={() => navigate("absensi")} testid="quick-attendance" /><QuickAction icon={GraduationCap} title="Input nilai" text="Kelola nilai formatif" onClick={() => navigate("nilai")} testid="quick-grades" /><QuickAction icon={BookMarked} title="Jurnal mengajar" text="Simpan refleksi kelas" onClick={() => navigate("jurnal")} testid="quick-journal" /></div></section></>;
+  return <><PageTitle eyebrow={new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} title={`Selamat datang, ${user?.name?.split(" ")[0] || "Guru"}`} description="Berikut ringkasan kegiatan mengajar Anda hari ini." action={<button className="primary-button" data-testid="dashboard-attendance-cta" onClick={() => navigate("absensi")}><CheckSquare size={17} /> Isi absensi</button>} /><div className="stat-grid"><Stat label="Kelas diampu" value={s.classes_count ?? "—"} change="Total kelas terdaftar" icon={School} color="green" /><Stat label="Siswa aktif" value={s.students_count ?? "—"} change="Total siswa terdaftar" icon={Users} color="amber" /><Stat label="Rata-rata kehadiran" value={rate} change="Bulan ini" icon={BarChart3} color="blue" /><Stat label="Jurnal tersimpan" value={s.journals_count ?? "—"} change={`${s.journals_incomplete ?? 0} perlu dilengkapi`} icon={BookMarked} color="rose" /></div><div className="dashboard-grid"><section className="panel schedule-panel"><PanelHeading title="Jadwal hari ini" subtitle={s.today_day || ""} action={<button className="text-button" data-testid="dashboard-schedule-link" onClick={() => navigate("jadwal")}>Lihat semua <ArrowRight size={14} /></button>} /><div className="timeline">{todaySchedule.map((item, i) => <TimelineItem key={item.id || i} time={`${item.start_time} — ${item.end_time}`} classNameName={item.class_name} subject={item.subject} room={item.room || "-"} attended={item.attended} onMark={() => onMarkAttendance?.(item.class_name, item.subject)} />)}{!todaySchedule.length && <p className="muted" data-testid="dashboard-schedule-empty">Tidak ada jadwal untuk hari ini.</p>}</div></section><section className="panel attention-panel"><PanelHeading title="Perlu perhatian" subtitle="Absensi bulan ini" action={<AlertTriangle size={18} className="warning-icon" />} /><div className="attention-callout"><div className="attention-number" data-testid="dashboard-frequent-absent-count">{s.frequent_absent_count ?? 0}</div><div><strong>siswa sering tidak hadir</strong><p>3 kali atau lebih alpa bulan ini</p></div></div>{topAbsent.map((item) => <div className="attention-row" key={item.name}><div className="student-avatar">{initials(item.name)}</div><span>{item.name}</span><b>{item.count}x alpa</b></div>)}{!topAbsent.length && <p className="muted" data-testid="dashboard-attention-empty">Belum ada data alpa bulan ini.</p>}<button className="outline-button" data-testid="view-attention-button" onClick={() => navigate("rekap")}>Buka rekap absensi <ArrowRight size={15} /></button></section></div><section className="quick-section"><div className="section-heading"><div><span className="eyebrow">Akses cepat</span><h2>Mulai dari sini</h2></div><span className="muted">Pekerjaan rutin Anda, lebih ringkas.</span></div><div className="quick-grid"><QuickAction icon={CheckSquare} title="Absensi siswa" text="Catat kehadiran kelas" onClick={() => navigate("absensi")} testid="quick-attendance" /><QuickAction icon={GraduationCap} title="Input nilai" text="Kelola nilai formatif" onClick={() => navigate("nilai")} testid="quick-grades" /><QuickAction icon={BookMarked} title="Jurnal mengajar" text="Simpan refleksi kelas" onClick={() => navigate("jurnal")} testid="quick-journal" /></div></section></>;
 }
 function Stat({ label, value, change, icon: Icon, color }) { return <div className="stat-card" data-testid={`stat-${label.toLowerCase().replaceAll(" ", "-")}`}><div className={`stat-icon ${color}`}><Icon size={19} /></div><div><span>{label}</span><strong>{value}</strong><small>{change}</small></div></div>; }
 function PanelHeading({ title, subtitle, action }) { return <div className="panel-heading"><div><h2>{title}</h2><span>{subtitle}</span></div>{action}</div>; }
-function TimelineItem({ time, classNameName, subject, room, active }) { return <div className={`timeline-item ${active ? "current" : ""}`}><div className="time">{time}</div><div className="timeline-line"><span /></div><div className="lesson"><div><strong>{subject}</strong><span>{classNameName} · {room}</span></div>{active && <span className="now-badge">Sedang berlangsung</span>}</div></div>; }
+function TimelineItem({ time, classNameName, subject, room, attended, onMark }) { return <div className={`timeline-item ${attended ? "done" : ""}`}><div className="time">{time}</div><div className="timeline-line"><span /></div><div className="lesson"><div><strong>{subject}</strong><span>{classNameName} · {room}</span></div>{attended ? <span className="now-badge done-badge"><Check size={12} /> Sudah absen</span> : <button type="button" className="now-badge pending-badge" onClick={onMark}>Belum absen</button>}</div></div>; }
 function QuickAction({ icon: Icon, title, text, onClick, testid }) { return <button className="quick-action" data-testid={testid} onClick={onClick}><div className="quick-icon"><Icon size={21} /></div><div><strong>{title}</strong><span>{text}</span></div><ArrowRight size={17} /></button>; }
 function FormShell({ children, title, subtitle, onSave, saveLabel = "Simpan perubahan", saving }) { return <section className="panel form-panel"><PanelHeading title={title} subtitle={subtitle} />{children}<div className="form-actions"><button className="primary-button" data-testid="form-save-button" onClick={onSave} disabled={saving}><Save size={16} /> {saving ? "Menyimpan..." : saveLabel}</button></div></section>; }
 function Select({ label, value, onChange, options, testid }) { return <label className="field">{label}<select data-testid={testid} value={value} onChange={(e) => onChange(e.target.value)}>{options.map((o) => <option key={o} value={o}>{o}</option>)}</select></label>; }
 
-function Attendance({ classes, subjects, subjectsByClass, showToast }) {
+function Attendance({ classes, subjects, subjectsByClass, showToast, prefill, onConsumePrefill }) {
   const [date, setDate] = useState(today());
   const [className, setClassName] = useState(classes[0]);
   const subjectOptions = subjectsByClass ? (subjectsByClass[className] || []) : subjects;
   const [subject, setSubject] = useState(subjectOptions[0]);
   useEffect(() => { if (!subjectOptions.includes(subject)) setSubject(subjectOptions[0]); }, [className]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!prefill) return;
+    if (prefill.className) setClassName(prefill.className);
+    if (prefill.subject) setSubject(prefill.subject);
+    onConsumePrefill?.();
+  }, [prefill]); // eslint-disable-line react-hooks/exhaustive-deps
   const [roster, setRoster] = useState([]);
   const [statuses, setStatuses] = useState({});
   const [notes, setNotes] = useState({});
@@ -1166,7 +1210,6 @@ function PiketRekap({ showToast }) {
   const [guru, setGuru] = useState("");
   const [dateFrom, setDateFrom] = useState(today());
   const [dateTo, setDateTo] = useState(today());
-  const [bulan, setBulan] = useState(today().slice(0, 7));
   const [settingsData, setSettingsData] = useState({});
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1181,20 +1224,18 @@ function PiketRekap({ showToast }) {
         data.forEach((h) => h.entries.filter((e) => e.teacher === guru).forEach((e) => rows.push({ date: h.date, class_name: e.class_name, subject: e.subject, jam: e.jam_hadir.length, status: e.status || "Hadir" })));
         rows.sort((a, b) => a.date.localeCompare(b.date));
         setPreview({ type: "jammengajar", rows, total: rows.reduce((s, r) => s + r.jam, 0) });
-      } else if (jenis === "bulanansemua") {
-        const { data } = await axios.get(`${API}/piket-attendance/history`, { params: { date_from: `${bulan}-01`, date_to: `${bulan}-31` } });
-        const perGuru = {};
-        data.forEach((h) => h.entries.forEach((e) => { perGuru[e.teacher] = perGuru[e.teacher] || {}; const week = Math.ceil(parseInt(h.date.slice(8, 10), 10) / 7); perGuru[e.teacher][week] = (perGuru[e.teacher][week] || 0) + e.jam_hadir.length; }));
-        setPreview({ type: "bulanansemua", perGuru, weeks: [1, 2, 3, 4, 5] });
-      } else if (jenis === "piket") {
-        const { data } = await axios.get(`${API}/piket-attendance/history`, { params: { date_from: dateFrom, date_to: dateTo } });
-        const count = {};
-        data.forEach((h) => (h.piket_guru || []).forEach((n) => { count[n] = (count[n] || 0) + 1; }));
-        setPreview({ type: "piket", count });
       } else if (jenis === "kehadiranguru") {
         const { data } = await axios.get(`${API}/piket-attendance/history`, { params: { date_from: dateFrom, date_to: dateFrom } });
-        const rows = [];
-        data.forEach((h) => h.entries.forEach((e) => rows.push({ shift: h.shift, teacher: e.teacher, class_name: e.class_name, subject: e.subject, jam: e.jam_hadir.join(", ") || "-", status: e.status || "Hadir" })));
+        const perGuru = {};
+        data.forEach((h) => h.entries.forEach((e) => {
+          const key = `${e.teacher}__${h.shift}`;
+          perGuru[key] = perGuru[key] || { teacher: e.teacher, shift: h.shift, jam: 0, kelas: [], mapel: [], status: e.status || "Hadir" };
+          perGuru[key].jam += e.jam_hadir.length;
+          perGuru[key].kelas.push(e.class_name);
+          perGuru[key].mapel.push(e.subject);
+        }));
+        const rows = Object.values(perGuru).map((g) => ({ teacher: g.teacher, shift: g.shift, jam: g.jam, status: g.status, kelas: g.kelas.join(", "), mapel: g.mapel.join(", ") }));
+        rows.sort((a, b) => a.shift.localeCompare(b.shift) || a.teacher.localeCompare(b.teacher));
         setPreview({ type: "kehadiranguru", rows });
       } else if (jenis === "pembiasaan") {
         const { data } = await axios.get(`${API}/piket-attendance/history`, { params: { date_from: dateFrom, date_to: dateTo } });
@@ -1217,14 +1258,12 @@ function PiketRekap({ showToast }) {
   const alamatSekolah = settingsData.address || "";
   const namaKepala = settingsData.principal || "............................";
   const namaWaka = settingsData.waka_kurikulum || "............................";
-  const JENIS_LABEL = { jammengajar: "Rekap Jam Mengajar Guru (untuk Honor)", bulanansemua: "Rekap Bulanan Semua Guru (per Minggu)", piket: "Rekap Piket (Jumlah Kali Bertugas)", kehadiranguru: "Absensi Semua Guru", pembiasaan: "Rekap Pembiasaan (Shalat Duha & Murotal)", izinsiswa: "Rekap Izin Siswa", pelanggaran: "Rekap Pelanggaran Siswa", jurnal: "Rekap Jurnal Piket" };
+  const JENIS_LABEL = { jammengajar: "Rekap Jam Mengajar Guru (untuk Honor)", kehadiranguru: "Absensi Semua Guru", pembiasaan: "Rekap Pembiasaan (Shalat Duha & Murotal)", izinsiswa: "Rekap Izin Siswa", pelanggaran: "Rekap Pelanggaran Siswa", jurnal: "Rekap Jurnal Piket" };
   return <>
     <PageTitle eyebrow="Laporan" title="Rekap & Cetak" description="Buat laporan siap cetak untuk kebutuhan administrasi piket." />
     <div className="filter-grid panel no-print">
       <label className="field">Jenis rekap<select value={jenis} onChange={(e) => { setJenis(e.target.value); setPreview(null); }}>
         <option value="jammengajar">Jam Mengajar Guru (untuk honor)</option>
-        <option value="bulanansemua">Rekap Bulanan Semua Guru (per Minggu)</option>
-        <option value="piket">Rekap Piket (Jumlah Kali Bertugas)</option>
         <option value="kehadiranguru">Absensi Semua Guru (per Tanggal)</option>
         <option value="pembiasaan">Rekap Pembiasaan (Shalat Duha & Murotal)</option>
         <option value="izinsiswa">Izin Siswa</option>
@@ -1232,8 +1271,7 @@ function PiketRekap({ showToast }) {
         <option value="jurnal">Jurnal Piket</option>
       </select></label>
       {jenis === "jammengajar" && <label className="field">Guru<select value={guru} onChange={(e) => setGuru(e.target.value)}><option value="">- Pilih guru -</option>{teachers.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}</select></label>}
-      {jenis === "bulanansemua" && <label className="field">Bulan<input type="month" value={bulan} onChange={(e) => setBulan(e.target.value)} /></label>}
-      {jenis !== "bulanansemua" && jenis !== "kehadiranguru" && <>
+      {jenis !== "kehadiranguru" && <>
         <label className="field">Dari tanggal<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label>
         <label className="field">Sampai tanggal<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label>
       </>}
@@ -1252,25 +1290,11 @@ function PiketRekap({ showToast }) {
         </tbody></table>
         <p style={{ fontWeight: "bold", fontSize: 12 }}>Total jam mengajar: {preview.total} jam</p>
       </>}
-      {preview.type === "bulanansemua" && <>
-        <div className="sub-laporan">Bulan {bulan}</div>
-        <table className="table-print"><thead><tr><th>Guru</th>{preview.weeks.map((w) => <th key={w}>Minggu {w}</th>)}<th>Total</th></tr></thead><tbody>
-          {!Object.keys(preview.perGuru).length && <tr><td colSpan={preview.weeks.length + 2} className="text-center">Tidak ada data</td></tr>}
-          {Object.entries(preview.perGuru).map(([nm, weeks]) => <tr key={nm}><td>{nm}</td>{preview.weeks.map((w) => <td key={w} className="text-center">{weeks[w] || 0}</td>)}<td className="text-center">{Object.values(weeks).reduce((s, v) => s + v, 0)}</td></tr>)}
-        </tbody></table>
-      </>}
-      {preview.type === "piket" && <>
-        <div className="sub-laporan">{dateFrom} s/d {dateTo}</div>
-        <table className="table-print"><thead><tr><th>No</th><th>Nama Guru Piket</th><th>Jumlah Kali Bertugas</th></tr></thead><tbody>
-          {!Object.keys(preview.count).length && <tr><td colSpan={3} className="text-center">Tidak ada data</td></tr>}
-          {Object.entries(preview.count).map(([nm, c], i) => <tr key={nm}><td className="text-center">{i + 1}</td><td>{nm}</td><td className="text-center">{c}</td></tr>)}
-        </tbody></table>
-      </>}
       {preview.type === "kehadiranguru" && <>
         <div className="sub-laporan">Tanggal {dateFrom}</div>
-        <table className="table-print"><thead><tr><th>Shift</th><th>Guru</th><th>Kelas</th><th>Mapel</th><th>Jam Aktual</th><th>Status</th></tr></thead><tbody>
-          {!preview.rows.length && <tr><td colSpan={6} className="text-center">Tidak ada data</td></tr>}
-          {preview.rows.map((r, i) => <tr key={i}><td className="text-center">{r.shift}</td><td>{r.teacher}</td><td className="text-center">{r.class_name}</td><td>{r.subject}</td><td className="text-center">{r.jam}</td><td className="text-center">{r.status}</td></tr>)}
+        <table className="table-print"><thead><tr><th>No</th><th>Shift</th><th>Guru</th><th>Kelas</th><th>Mapel</th><th>JML JP</th><th>Status</th></tr></thead><tbody>
+          {!preview.rows.length && <tr><td colSpan={7} className="text-center">Tidak ada data</td></tr>}
+          {preview.rows.map((r, i) => <tr key={i}><td className="text-center">{i + 1}</td><td className="text-center">{r.shift}</td><td>{r.teacher}</td><td>{r.kelas}</td><td>{r.mapel}</td><td className="text-center">{r.jam}</td><td className="text-center">{r.status}</td></tr>)}
         </tbody></table>
       </>}
       {preview.type === "pembiasaan" && <>
@@ -1368,7 +1392,7 @@ function SekretarisAccountsAdmin({ showToast, classes }) {
   return <><PageTitle eyebrow="Administrasi" title="Akun Sekretaris Kelas" description="Satu akun untuk satu kelas." /><section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Nama (label)<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Contoh: Sekretaris 7A" /></label><label className="field">Username{editing && <span style={{ fontWeight: 400, opacity: 0.7 }}> (tidak bisa diubah)</span>}<input value={form.username} disabled={!!editing} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="username login" /></label><label className="field">{editing ? "Password baru (opsional)" : "Password"}<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "Kosongkan jika tidak diganti" : "min 6 karakter"} /></label><label className="field">Kelas<select value={form.secretary_class} onChange={(e) => setForm({ ...form, secretary_class: e.target.value })}><option value="">- Pilih kelas -</option>{classes.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><button className="primary-button filter-button" onClick={submit}><Save size={16} /> {editing ? "Simpan perubahan" : "Buat akun"}</button>{editing && <button className="secondary-button" onClick={() => { setEditing(null); setForm({ name: "", username: "", password: "", secretary_class: "" }); }}><X size={16} /> Batal</button>}</section><section className="panel"><div className="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Kelas</th><th></th></tr></thead><tbody>{accounts.map((a) => <tr key={a.id}><td>{a.name}</td><td>{a.username}</td><td>{a.secretary_class}</td><td><div style={{ display: "flex", gap: 6 }}><button className="icon-button" onClick={() => editAcc(a)}><Pencil size={16} /></button><button className="icon-button" onClick={() => remove(a.id)}><Trash2 size={16} /></button></div></td></tr>)}{!accounts.length && <tr><td colSpan="4">Belum ada akun sekretaris kelas.</td></tr>}</tbody></table></div></section></>;
 }
 
-function DailyAttendanceAbsen({ showToast, className, canEditAlways }) {
+function DailyAttendanceAbsen({ showToast, className, canEditAlways, hideStats }) {
   const [date, setDate] = useState(today());
   const [roster, setRoster] = useState([]);
   const [statuses, setStatuses] = useState({});
@@ -1398,7 +1422,7 @@ function DailyAttendanceAbsen({ showToast, className, canEditAlways }) {
       load();
     } catch (err) { showToast(errMsg(err, "Gagal menyimpan absensi")); } finally { setSaving(false); }
   };
-  return <><PageTitle eyebrow="Absensi Harian" title="Absen Siswa" description={`Kelas ${className || "-"} \u00b7 semua siswa otomatis Hadir, klik status lain untuk yang tidak hadir.`} /><div className="filter-grid panel"><label className="field">Tanggal<input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label></div><div className="stat-grid"><Stat label="Hadir" value={Object.values(statuses).filter((s) => s === "H").length} change="Hari ini" icon={Check} color="green" /><Stat label="Sakit" value={Object.values(statuses).filter((s) => s === "S").length} change="Hari ini" icon={Thermometer} color="amber" /><Stat label="Izin" value={Object.values(statuses).filter((s) => s === "I").length} change="Hari ini" icon={DoorOpen} color="blue" /><Stat label="Alfa" value={Object.values(statuses).filter((s) => s === "A").length} change="Hari ini" icon={X} color="rose" /></div>{locked && <div className="panel" style={{ marginBottom: 16, background: "#f0fdf4", borderColor: "#bbf7d0" }}><p style={{ margin: 0, fontSize: 13, color: "#166534" }}><Check size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />Kelas ini sudah diabsen untuk tanggal ini. Absen ulang tidak bisa dilakukan &mdash; hubungi Wali Kelas/Admin kalau perlu koreksi.</p></div>}<section className="panel roster-panel"><div className="table-wrap"><table><thead><tr><th>No</th><th>Nama siswa</th><th>Status kehadiran</th><th>Catatan</th></tr></thead><tbody>{roster.map((s, i) => <tr key={s.id}><td>{String(i + 1).padStart(2, "0")}</td><td><div className="name-cell"><span className="student-avatar">{initials(s.name)}</span><strong>{s.name}</strong></div></td><td><div className="status-buttons">{[["H", "Hadir", "hadir"], ["S", "Sakit", "sakit"], ["I", "Izin", "izin"], ["A", "Alpa", "alpa"]].map(([code, name, style]) => <button key={code} disabled={locked} className={`${style} ${statuses[s.name] === code ? "selected" : ""}`} onClick={() => setStatuses({ ...statuses, [s.name]: code })}>{code}<span>{name}</span></button>)}</div></td><td><input className="table-input" disabled={locked} value={notes[s.name] || ""} onChange={(e) => setNotes({ ...notes, [s.name]: e.target.value })} placeholder="Tambah catatan" /></td></tr>)}{!roster.length && <tr><td colSpan="4">Belum ada data siswa untuk kelas ini.</td></tr>}</tbody></table></div>{!locked && <div className="roster-footer"><span><Check size={15} /> {Object.values(statuses).filter((x) => x === "H").length} siswa hadir</span><button className="primary-button" onClick={save} disabled={saving || !roster.length}><Save size={16} /> {saving ? "Mengirim..." : "Kirim absensi"}</button></div>}</section></>;
+  return <><PageTitle eyebrow="Absensi Harian" title="Absen Siswa" description={`Kelas ${className || "-"} \u00b7 semua siswa otomatis Hadir, klik status lain untuk yang tidak hadir.`} /><div className="filter-grid panel"><label className="field">Tanggal<input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label></div>{!hideStats && <div className="stat-grid"><Stat label="Hadir" value={Object.values(statuses).filter((s) => s === "H").length} change="Hari ini" icon={Check} color="green" /><Stat label="Sakit" value={Object.values(statuses).filter((s) => s === "S").length} change="Hari ini" icon={Thermometer} color="amber" /><Stat label="Izin" value={Object.values(statuses).filter((s) => s === "I").length} change="Hari ini" icon={DoorOpen} color="blue" /><Stat label="Alfa" value={Object.values(statuses).filter((s) => s === "A").length} change="Hari ini" icon={X} color="rose" /></div>}{locked && <div className="panel" style={{ marginBottom: 16, background: "#f0fdf4", borderColor: "#bbf7d0" }}><p style={{ margin: 0, fontSize: 13, color: "#166534" }}><Check size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />Kelas ini sudah diabsen untuk tanggal ini. Absen ulang tidak bisa dilakukan &mdash; hubungi Wali Kelas/Admin kalau perlu koreksi.</p></div>}<section className="panel roster-panel"><div className="table-wrap"><table><thead><tr><th>No</th><th>Nama siswa</th><th>Status kehadiran</th><th>Catatan</th></tr></thead><tbody>{roster.map((s, i) => <tr key={s.id}><td>{String(i + 1).padStart(2, "0")}</td><td><div className="name-cell"><span className="student-avatar">{initials(s.name)}</span><strong>{s.name}</strong></div></td><td><div className="status-buttons">{[["H", "Hadir", "hadir"], ["S", "Sakit", "sakit"], ["I", "Izin", "izin"], ["A", "Alpa", "alpa"]].map(([code, name, style]) => <button key={code} disabled={locked} className={`${style} ${statuses[s.name] === code ? "selected" : ""}`} onClick={() => setStatuses({ ...statuses, [s.name]: code })}>{code}<span>{name}</span></button>)}</div></td><td><input className="table-input" disabled={locked} value={notes[s.name] || ""} onChange={(e) => setNotes({ ...notes, [s.name]: e.target.value })} placeholder="Tambah catatan" /></td></tr>)}{!roster.length && <tr><td colSpan="4">Belum ada data siswa untuk kelas ini.</td></tr>}</tbody></table></div>{!locked && <div className="roster-footer"><span><Check size={15} /> {Object.values(statuses).filter((x) => x === "H").length} siswa hadir</span><button className="primary-button" onClick={save} disabled={saving || !roster.length}><Save size={16} /> {saving ? "Mengirim..." : "Kirim absensi"}</button></div>}</section></>;
 }
 
 function DailyAttendanceRekap({ showToast, classes, fixedClass }) {
@@ -1510,14 +1534,13 @@ function WaliKelasPage({ showToast, homeroomClass }) {
     <div className="filter-grid panel no-print"><label className="field">Dari tanggal<input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label><label className="field">Sampai tanggal<input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} /></label></div>
     {alfaList.length > 0 && <section className="panel" style={{ marginBottom: 18, borderColor: "#fecaca" }}><PanelHeading title="Perlu Perhatian (Alfa lebih dari 3x)" action={<AlertTriangle size={18} color="#dc2626" />} /><div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Jumlah Alfa</th></tr></thead><tbody>{alfaList.map(([nm, c]) => <tr key={nm}><td>{nm}</td><td className="text-center">{c}x</td></tr>)}</tbody></table></div></section>}
     <section className="panel"><PanelHeading title="Riwayat absen kelas" subtitle={`${history.length} hari tercatat`} /><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Hadir</th><th>Sakit</th><th>Izin</th><th>Alfa</th><th>Dicatat oleh</th><th></th></tr></thead><tbody>{history.map((h) => { const c = { H: 0, S: 0, I: 0, A: 0 }; h.entries.forEach((e) => { c[e.status] = (c[e.status] || 0) + 1; }); return <tr key={h.id}><td>{h.date}</td><td className="text-center">{c.H}</td><td className="text-center">{c.S}</td><td className="text-center">{c.I}</td><td className="text-center">{c.A}</td><td>{h.recorded_by}</td><td><button className="icon-button" onClick={() => removeEntry(h.id)}><Trash2 size={16} /></button></td></tr>; })}{!history.length && <tr><td colSpan="7">Belum ada data absensi.</td></tr>}</tbody></table></div></section>
-    <section className="panel" style={{ marginTop: 18 }}><PanelHeading title="Koreksi absen (input ulang tanggal tertentu)" /><DailyAttendanceAbsen showToast={showToast} className={homeroomClass} canEditAlways /></section>
+    <section className="panel" style={{ marginTop: 18 }}><PanelHeading title="Koreksi absen (input ulang tanggal tertentu)" /><DailyAttendanceAbsen showToast={showToast} className={homeroomClass} canEditAlways hideStats /></section>
     <section style={{ marginTop: 18 }}><DailyAttendanceRekap showToast={showToast} fixedClass={homeroomClass} classes={[homeroomClass]} /></section>
   </>;
 }
 
 const SEKRETARIS_NAV = [
   { id: "absen", label: "Absen", icon: CheckSquare },
-  { id: "rekap", label: "Rekap", icon: Printer },
 ];
 
 function SekretarisApp({ user, showToast, toast, onLogout }) {
@@ -1525,7 +1548,6 @@ function SekretarisApp({ user, showToast, toast, onLogout }) {
   const className = user.secretary_class;
   return <MobileShell subtitle={`Sekretaris Kelas ${className}`} roleLabel={`Sekretaris ${className}`} user={user} navItems={SEKRETARIS_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
     {active === "absen" && <DailyAttendanceAbsen showToast={showToast} className={className} />}
-    {active === "rekap" && <DailyAttendanceRekap showToast={showToast} fixedClass={className} classes={[className]} />}
   </MobileShell>;
 }
 
@@ -2027,16 +2049,14 @@ function ArsipSuratTab({ showToast, jenis }) {
 }
 
 function LaporanPage({ showToast }) {
-  const [dateFrom, setDateFrom] = useState(`${today().slice(0, 7)}-01`);
-  const [dateTo, setDateTo] = useState(today());
+  const [bulanJamBerdiri, setBulanJamBerdiri] = useState(today().slice(0, 7));
   const downloadBlob = async (url, filename) => {
     try { const res = await axios.get(url, { responseType: "blob" }); const objUrl = URL.createObjectURL(res.data); const link = document.createElement("a"); link.href = objUrl; link.download = filename; link.click(); URL.revokeObjectURL(objUrl); showToast("File berhasil diunduh"); }
     catch { showToast("Gagal mengunduh laporan"); }
   };
   return <><PageTitle eyebrow="Tata Usaha" title="Laporan" description="Unduh rekapitulasi data dalam format Excel." />
     <section className="panel" style={{ marginBottom: 16 }}><PanelHeading title="Rekap Buku Induk" subtitle="Seluruh data biodata siswa" /><button className="primary-button" onClick={() => downloadBlob(`${API}/reports/export-buku-induk`, "buku-induk.xlsx")}><FileDown size={16} /> Unduh Excel</button></section>
-    <section className="panel" style={{ marginBottom: 16 }}><PanelHeading title="Rekap Absensi Guru" subtitle="Dari data Absensi &amp; Jam Mengajar Piket" /><div className="filter-grid"><label className="field">Dari tanggal<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label><label className="field">Sampai tanggal<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label><button className="primary-button filter-button" onClick={() => downloadBlob(`${API}/reports/export-absensi-guru?date_from=${dateFrom}&date_to=${dateTo}`, "rekap-absensi-guru.xlsx")}><FileDown size={16} /> Unduh Excel</button></div></section>
-    <section className="panel"><PanelHeading title="Rekap Absensi Siswa" subtitle="Dari data Absen Sekretaris Kelas" /><div className="filter-grid"><label className="field">Dari tanggal<input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} /></label><label className="field">Sampai tanggal<input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></label><button className="primary-button filter-button" onClick={() => downloadBlob(`${API}/reports/export-absensi-siswa?date_from=${dateFrom}&date_to=${dateTo}`, "rekap-absensi-siswa.xlsx")}><FileDown size={16} /> Unduh Excel</button></div></section>
+    <section className="panel"><PanelHeading title="Rekap Jam Berdiri Guru (per Minggu)" subtitle="Format khusus: KBM per tanggal, per minggu, dan guru piket" /><div className="filter-grid"><label className="field">Bulan<input type="month" value={bulanJamBerdiri} onChange={(e) => setBulanJamBerdiri(e.target.value)} /></label><button className="primary-button filter-button" onClick={() => downloadBlob(`${API}/reports/export-jam-berdiri?bulan=${bulanJamBerdiri}`, `jam-berdiri-${bulanJamBerdiri}.xlsx`)}><FileDown size={16} /> Unduh Excel</button><button className="secondary-button filter-button" onClick={() => window.open(`${API}/reports/print-jam-berdiri?bulan=${bulanJamBerdiri}`, "_blank")}><Printer size={16} /> Cetak / PDF (F4 Landscape)</button></div></section>
   </>;
 }
 
@@ -2046,6 +2066,7 @@ const TU_NAV = [
   { id: "kelola-kelas", label: "Kelola Kelas", icon: School },
   { id: "manajemen-akun", label: "Manajemen Akun", icon: UserCog },
   { id: "persuratan", label: "Persuratan", icon: FileText },
+  { id: "rekap-absensi-siswa", label: "Rekap Absensi Siswa", icon: BarChart3 },
   { id: "laporan", label: "Laporan", icon: FileDown },
 ];
 
@@ -2058,6 +2079,7 @@ function TuApp({ user, showToast, toast, onLogout, masters, addMaster, updateMas
     {active === "kelola-kelas" && masters && <KelasManager rows={masters.classes} showToast={showToast} onReload={onReloadMasters} />}
     {active === "manajemen-akun" && <ManajemenAkunPage showToast={showToast} classes={classes} />}
     {active === "persuratan" && <PersuratanPage showToast={showToast} />}
+    {active === "rekap-absensi-siswa" && <DailyAttendanceRekap showToast={showToast} classes={classes} />}
     {active === "laporan" && <LaporanPage showToast={showToast} />}
   </MobileShell>;
 }

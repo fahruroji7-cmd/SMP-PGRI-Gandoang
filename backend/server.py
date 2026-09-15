@@ -17,6 +17,9 @@ from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, R
 from fastapi.responses import HTMLResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+import calendar
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
 
@@ -487,6 +490,7 @@ async def seed_accounts():
 DEFAULT_SETTINGS = {"school": "SMP PGRI Gandoang", "address": "Jl. Raya Gandoang No. 12", "principal": "Drs. Ahmad Fauzi", "nip": "197001011995011001", "ekskul_coordinator": "", "ekskul_coordinator_nip": "", "waka_kurikulum": "", "logo_base64": "", "logo_lencana_base64": "", "kartu_template_base64": ""}
 DAY_NAMES = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
 DAY_ORDER = {name: i for i, name in enumerate(DAY_NAMES)}
+BULAN_NAMA = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
 
 
 async def seed_masters():
@@ -1617,24 +1621,199 @@ async def export_absensi_guru(date_from: str, date_to: str, user: dict = Depends
     return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="rekap-absensi-guru.xlsx"'})
 
 
-@api_router.get("/reports/export-absensi-siswa")
-async def export_absensi_siswa(date_from: str, date_to: str, user: dict = Depends(require_role("Admin", "TU"))):
-    docs = await db.daily_attendance.find({"date": {"$gte": date_from, "$lte": date_to}}, {"_id": 0}).sort("date", 1).to_list(1000)
+async def compute_jam_berdiri(bulan: str):
+    year, month = (int(x) for x in bulan.split("-"))
+    days_in_month = calendar.monthrange(year, month)[1]
+    num_weeks = -(-days_in_month // 7)
+
+    docs = await db.piket_attendance.find({"date": {"$regex": f"^{bulan}"}}, {"_id": 0}).sort("date", 1).to_list(1000)
+    beban = await db.beban_mengajar.find({}, {"_id": 0}).to_list(2000)
+
+    target_jam: dict[str, int] = {}
+    for b in beban:
+        target_jam[b["teacher"]] = target_jam.get(b["teacher"], 0) + (b["jam_akhir"] - b["jam_awal"] + 1)
+
+    per_ts_date: dict[tuple[str, str], dict[str, int]] = {}
+    piket_pagi: dict[str, int] = {}
+    piket_siang: dict[str, int] = {}
+    for doc in docs:
+        for name in doc.get("piket_guru", []):
+            bucket = piket_pagi if doc["shift"] == "Pagi" else piket_siang
+            bucket[name] = bucket.get(name, 0) + 1
+        for e in doc.get("entries", []):
+            key = (e["teacher"], e["subject"])
+            per_ts_date.setdefault(key, {})
+            per_ts_date[key][doc["date"]] = per_ts_date[key].get(doc["date"], 0) + len(e.get("jam_hadir", []))
+
+    row_keys = sorted(per_ts_date.keys(), key=lambda k: (k[0], k[1]))
+
+    week_dates = []
+    for w in range(num_weeks):
+        start_day = w * 7 + 1
+        end_day = min(start_day + 6, days_in_month)
+        dates_this_week = [d for d in range(start_day, end_day + 1) if calendar.weekday(year, month, d) != 6][:6]
+        week_dates.append(dates_this_week)
+
+    rows = []
+    for teacher, subject in row_keys:
+        dates_map = per_ts_date.get((teacher, subject), {})
+        week_values = []
+        total_berdiri = 0
+        for dates_this_week in week_dates:
+            day_values = []
+            week_total = 0
+            for d in dates_this_week:
+                date_str = f"{year:04d}-{month:02d}-{d:02d}"
+                val = dates_map.get(date_str, 0)
+                day_values.append(val or None)
+                week_total += val
+            week_values.append({"days": day_values, "total": week_total})
+            total_berdiri += week_total
+        rows.append({
+            "teacher": teacher, "subject": subject, "jml_jam": target_jam.get(teacher, 0),
+            "weeks": week_values, "total_berdiri": total_berdiri,
+            "piket_pagi": piket_pagi.get(teacher, 0), "piket_siang": piket_siang.get(teacher, 0),
+        })
+
+    return {"year": year, "month": month, "num_weeks": num_weeks, "week_dates": week_dates, "rows": rows}
+
+
+@api_router.get("/reports/export-jam-berdiri")
+async def export_jam_berdiri(bulan: str, user: dict = Depends(require_role("Admin", "TU"))):
+    data = await compute_jam_berdiri(bulan)
+    year, month, num_weeks, week_dates, rows = data["year"], data["month"], data["num_weeks"], data["week_dates"], data["rows"]
+
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Absensi Siswa"
-    sheet.append(["No", "Tanggal", "Kelas", "Nama Siswa", "Status", "Catatan"])
-    i = 0
-    for doc in docs:
-        for e in doc.get("entries", []):
-            i += 1
-            sheet.append([i, doc["date"], doc["class_name"], e["student"], e["status"], e.get("note", "")])
-    for column in sheet.columns:
-        sheet.column_dimensions[column[0].column_letter].width = max(12, min(28, max(len(str(cell.value or "")) for cell in column) + 2))
+    sheet.title = "Jam berdiri"
+
+    bold = Font(bold=True)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin = Side(style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    WEEK_START_COL = 4
+    COLS_PER_WEEK = 7
+    jml_berdiri_col = WEEK_START_COL + num_weeks * COLS_PER_WEEK
+    piket_pagi_col = jml_berdiri_col + 1
+    piket_siang_col = jml_berdiri_col + 2
+    last_col = piket_siang_col
+
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    sheet.cell(row=1, column=1, value=f"REKAP JAM BERDIRI GURU - {BULAN_NAMA[month].upper()} {year}").font = Font(bold=True, size=13)
+    sheet.cell(row=1, column=1).alignment = Alignment(horizontal="center")
+
+    sheet.merge_cells(start_row=2, start_column=1, end_row=5, end_column=1)
+    sheet.cell(row=2, column=1, value="NAMA GURU")
+    sheet.merge_cells(start_row=2, start_column=2, end_row=5, end_column=2)
+    sheet.cell(row=2, column=2, value="MAPEL")
+    sheet.merge_cells(start_row=2, start_column=3, end_row=5, end_column=3)
+    sheet.cell(row=2, column=3, value="JML JAM")
+    sheet.merge_cells(start_row=2, start_column=WEEK_START_COL, end_row=2, end_column=jml_berdiri_col - 1)
+    sheet.cell(row=2, column=WEEK_START_COL, value=f"Bulan {BULAN_NAMA[month]} {year}")
+    sheet.merge_cells(start_row=2, start_column=jml_berdiri_col, end_row=5, end_column=jml_berdiri_col)
+    sheet.cell(row=2, column=jml_berdiri_col, value="JML JM BERDIRI")
+    sheet.merge_cells(start_row=2, start_column=piket_pagi_col, end_row=2, end_column=piket_siang_col)
+    sheet.cell(row=2, column=piket_pagi_col, value="GURU PIKET")
+    sheet.merge_cells(start_row=3, start_column=piket_pagi_col, end_row=5, end_column=piket_pagi_col)
+    sheet.cell(row=3, column=piket_pagi_col, value="PAGI")
+    sheet.merge_cells(start_row=3, start_column=piket_siang_col, end_row=5, end_column=piket_siang_col)
+    sheet.cell(row=3, column=piket_siang_col, value="SIANG")
+
+    for w, dates_this_week in enumerate(week_dates):
+        col_start = WEEK_START_COL + w * COLS_PER_WEEK
+        col_kbm_end = col_start + COLS_PER_WEEK - 2
+        col_jml = col_start + COLS_PER_WEEK - 1
+        sheet.merge_cells(start_row=3, start_column=col_start, end_row=3, end_column=col_jml)
+        sheet.cell(row=3, column=col_start, value=f"MINGGU KE {w + 1}")
+        sheet.merge_cells(start_row=4, start_column=col_start, end_row=4, end_column=col_kbm_end)
+        sheet.cell(row=4, column=col_start, value="KBM")
+        for i, d in enumerate(dates_this_week):
+            sheet.cell(row=5, column=col_start + i, value=d)
+        sheet.cell(row=5, column=col_jml, value="JML")
+
+    for row in sheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=last_col):
+        for cell in row:
+            cell.alignment = center
+            cell.border = border
+            cell.fill = PatternFill("solid", fgColor="D9E8DC")
+            if cell.row <= 5:
+                cell.font = bold
+
+    r = 6
+    for row_data in rows:
+        sheet.cell(row=r, column=1, value=row_data["teacher"])
+        sheet.cell(row=r, column=2, value=row_data["subject"])
+        sheet.cell(row=r, column=3, value=row_data["jml_jam"])
+        for w, week in enumerate(row_data["weeks"]):
+            col_start = WEEK_START_COL + w * COLS_PER_WEEK
+            col_jml = col_start + COLS_PER_WEEK - 1
+            for i, val in enumerate(week["days"]):
+                if val:
+                    sheet.cell(row=r, column=col_start + i, value=val)
+            sheet.cell(row=r, column=col_jml, value=week["total"])
+        sheet.cell(row=r, column=jml_berdiri_col, value=row_data["total_berdiri"])
+        sheet.cell(row=r, column=piket_pagi_col, value=row_data["piket_pagi"])
+        sheet.cell(row=r, column=piket_siang_col, value=row_data["piket_siang"])
+        for c in range(1, last_col + 1):
+            sheet.cell(row=r, column=c).border = border
+            if c >= WEEK_START_COL:
+                sheet.cell(row=r, column=c).alignment = Alignment(horizontal="center")
+        r += 1
+    if not rows:
+        sheet.cell(row=r, column=1, value="Tidak ada data untuk bulan ini")
+
+    for w in range(num_weeks):
+        col_start = WEEK_START_COL + w * COLS_PER_WEEK
+        for c in range(col_start, col_start + COLS_PER_WEEK - 1):
+            sheet.column_dimensions[get_column_letter(c)].width = 5
+    sheet.column_dimensions["A"].width = 24
+    sheet.column_dimensions["B"].width = 16
+    sheet.column_dimensions["C"].width = 9
+
     stream = io.BytesIO()
     workbook.save(stream)
     stream.seek(0)
-    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="rekap-absensi-siswa.xlsx"'})
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="jam-berdiri-{bulan}.xlsx"'})
+
+
+@api_router.get("/reports/print-jam-berdiri", response_class=HTMLResponse)
+async def print_jam_berdiri(bulan: str, user: dict = Depends(require_role("Admin", "TU"))):
+    data = await compute_jam_berdiri(bulan)
+    year, month, num_weeks, week_dates, rows = data["year"], data["month"], data["num_weeks"], data["week_dates"], data["rows"]
+    school = await db.settings.find_one({"id": "school"}, {"_id": 0}) or DEFAULT_SETTINGS
+
+    week_header = "".join(f"<th colspan='{len(wd) + 1}'>MINGGU KE {w + 1}</th>" for w, wd in enumerate(week_dates))
+    kbm_header = "".join(f"<th colspan='{len(wd)}'>KBM</th><th></th>" for wd in week_dates)
+    date_header = "".join("".join(f"<th>{d}</th>" for d in wd) + "<th>JML</th>" for wd in week_dates)
+    body_rows = ""
+    for row_data in rows:
+        week_cells = "".join("".join(f"<td>{v or ''}</td>" for v in week["days"]) + f"<td><b>{week['total']}</b></td>" for week in row_data["weeks"])
+        body_rows += f"<tr><td class='left'>{row_data['teacher']}</td><td class='left'>{row_data['subject']}</td><td>{row_data['jml_jam']}</td>{week_cells}<td><b>{row_data['total_berdiri']}</b></td><td>{row_data['piket_pagi']}</td><td>{row_data['piket_siang']}</td></tr>"
+    if not rows:
+        colspan = 4 + sum(len(wd) + 1 for wd in week_dates) + 2
+        body_rows = f"<tr><td colspan='{colspan}'>Tidak ada data untuk bulan ini</td></tr>"
+
+    return HTMLResponse(f"""<!doctype html><html lang='id'><head><meta charset='utf-8'><title>Rekap Jam Berdiri Guru</title><style>
+@page {{ size: 330mm 215mm; margin: 8mm; }}
+body{{font-family:Arial,sans-serif;color:#19342a;padding:16px}}
+h1{{font-size:16px;margin:0 0 2px;text-align:center}}
+h2{{font-size:12px;margin:0 0 10px;text-align:center;font-weight:normal}}
+table{{width:100%;border-collapse:collapse;font-size:9px}}
+th,td{{border:1px solid #999;padding:3px 2px;text-align:center}}
+td.left{{text-align:left}}
+th{{background:#d9e8dc}}
+@media print{{button{{display:none}}}}
+</style></head><body>
+<button onclick='window.print()'>Cetak / Simpan PDF</button>
+<h1>{school['school']}</h1>
+<h2>REKAP JAM BERDIRI GURU &mdash; {BULAN_NAMA[month].upper()} {year}</h2>
+<table><thead>
+<tr><th rowspan='4'>NAMA GURU</th><th rowspan='4'>MAPEL</th><th rowspan='4'>JML JAM</th>{week_header}<th rowspan='4'>JML JM<br>BERDIRI</th><th colspan='2'>GURU PIKET</th></tr>
+<tr>{kbm_header}<th rowspan='3'>PAGI</th><th rowspan='3'>SIANG</th></tr>
+<tr>{date_header}</tr>
+</thead><tbody>{body_rows}</tbody></table>
+</body></html>""")
 
 
 @api_router.post("/piket-accounts")
@@ -1835,11 +2014,27 @@ STATUS_LABELS = {"H": "Hadir", "S": "Sakit", "I": "Izin", "A": "Alpa"}
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
-    classes = await db.classes.find({}, {"_id": 0}).to_list(200)
-    students = await db.students.find({}, {"_id": 0}).to_list(1000)
-    journals = await db.journals.find({}, {"_id": 0}).to_list(500)
+    if user["role"] == "Admin":
+        classes = await db.classes.find({}, {"_id": 0}).to_list(200)
+        students = await db.students.find({}, {"_id": 0}).to_list(1000)
+        journals = await db.journals.find({}, {"_id": 0}).to_list(500)
+        my_class_names = [c["name"] for c in classes]
+    else:
+        my_schedules = await db.schedules.find({"created_by": user["name"]}, {"_id": 0}).to_list(500)
+        my_class_names = sorted({s["class_name"] for s in my_schedules})
+        classes = await db.classes.find({"name": {"$in": my_class_names}}, {"_id": 0}).to_list(200)
+        students = await db.students.find({"class_name": {"$in": my_class_names}}, {"_id": 0}).to_list(1000)
+        journals = await db.journals.find({"teacher": user["name"]}, {"_id": 0}).to_list(500)
     month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
-    attendance_docs = await db.attendance.find({"date": {"$regex": f"^{month_prefix}"}}, {"_id": 0}).to_list(500)
+    attention_class_names = set(my_class_names)
+    if user["role"] == "Guru":
+        homeroom = await get_homeroom_class(user)
+        if homeroom:
+            attention_class_names.add(homeroom)
+    attendance_query = {"date": {"$regex": f"^{month_prefix}"}}
+    if user["role"] != "Admin":
+        attendance_query["class_name"] = {"$in": list(attention_class_names)}
+    attendance_docs = await db.attendance.find(attendance_query, {"_id": 0}).to_list(500)
     total_marks = 0
     present_marks = 0
     absent_counts: dict[str, dict] = {}
@@ -1855,8 +2050,16 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     top_absent = sorted(absent_counts.values(), key=lambda x: x["count"], reverse=True)[:3]
     frequent_absent_count = len([x for x in absent_counts.values() if x["count"] >= 3])
     today_name = DAY_NAMES[datetime.now(timezone.utc).weekday()]
-    today_schedule = await db.schedules.find({"day": today_name}, {"_id": 0}).to_list(50)
+    today_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    schedule_query = {"day": today_name}
+    if user["role"] != "Admin":
+        schedule_query["created_by"] = user["name"]
+    today_schedule = await db.schedules.find(schedule_query, {"_id": 0}).to_list(50)
     today_schedule.sort(key=lambda r: r["start_time"])
+    today_attendance_docs = await db.attendance.find({"date": today_date_str}, {"_id": 0, "class_name": 1, "subject": 1, "entries": 1}).to_list(200)
+    attended_pairs = {(d["class_name"], d["subject"]) for d in today_attendance_docs if d.get("entries")}
+    for row in today_schedule:
+        row["attended"] = (row["class_name"], row["subject"]) in attended_pairs
     return {
         "classes_count": len(classes),
         "students_count": len(students),
