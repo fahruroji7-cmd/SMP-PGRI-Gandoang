@@ -6,6 +6,8 @@ import io
 import logging
 import os
 import re
+import random
+import base64
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -41,7 +43,7 @@ class UserOut(BaseModel):
     id: str
     username: str
     name: str
-    role: Literal["Admin", "Guru", "Pembina", "Piket Pagi", "Piket Siang", "Sekretaris", "TU", "Siswa"]
+    role: Literal["Admin", "Guru", "Pembina", "Piket Pagi", "Piket Siang", "Sekretaris", "TU", "Siswa", "CBT", "Kepsek"]
     secretary_class: str | None = None
     student_id: str | None = None
 
@@ -94,6 +96,8 @@ class ScheduleInput(BaseModel):
     class_name: str
     subject: str
     room: str = ""
+    jam_awal: int = Field(ge=1, le=20)
+    jam_akhir: int = Field(ge=1, le=20)
 
 
 class NameInput(BaseModel):
@@ -322,6 +326,88 @@ class TeacherNipInput(BaseModel):
     nip: str = Field(default="", max_length=30)
 
 
+class KasBayarInput(BaseModel):
+    student_name: str = Field(min_length=1, max_length=120)
+    bulan: str = Field(min_length=7, max_length=7)
+    jumlah: int = Field(gt=0)
+    tanggal: str = Field(default="", max_length=12)
+    catatan: str = Field(default="", max_length=200)
+
+
+class KasPengeluaranInput(BaseModel):
+    tanggal: str = Field(min_length=1, max_length=12)
+    keterangan: str = Field(min_length=1, max_length=200)
+    jumlah: int = Field(gt=0)
+
+
+class KasTargetInput(BaseModel):
+    target: int = Field(ge=0)
+
+
+class PaketSoalInput(BaseModel):
+    nama: str = Field(min_length=1, max_length=150)
+    mapel: str = Field(min_length=1, max_length=80)
+
+
+class SoalInput(BaseModel):
+    paket_id: str
+    pertanyaan: str = Field(min_length=1, max_length=2000)
+    gambar: str = Field(default="", max_length=3_000_000)
+    pilihan: list[str] = Field(min_length=2, max_length=6)
+    jawaban_benar: int = Field(ge=0)
+    poin: int = Field(default=1, ge=1, le=100)
+
+
+class KegiatanInput(BaseModel):
+    nama: str = Field(min_length=1, max_length=150)
+    tipe: str = Field(default="", max_length=40)
+    class_name: str
+    mapel_list: list[str] = Field(min_length=1)
+    durasi_menit: int = Field(gt=0, le=600)
+
+
+class KegiatanJadwalInput(BaseModel):
+    mulai: str = Field(min_length=1, max_length=25)
+    selesai: str = Field(min_length=1, max_length=25)
+
+
+class UjianSubmitInput(BaseModel):
+    mapel: str = Field(min_length=1, max_length=80)
+    paket_id: str
+    acak_soal: bool = True
+    acak_pilihan: bool = True
+
+
+class CBTLoginInput(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class CBTJawabInput(BaseModel):
+    ujian_id: str
+    soal_id: str
+    jawaban: int = Field(ge=0)
+
+
+class CBTEventInput(BaseModel):
+    tipe: Literal["tab_switch", "fullscreen_exit", "blur", "copy_paste"]
+
+
+class TeacherBiodataInput(BaseModel):
+    nip: str = Field(default="", max_length=30)
+    nuptk: str = Field(default="", max_length=30)
+    tempat_lahir: str = Field(default="", max_length=60)
+    tanggal_lahir: str = Field(default="", max_length=12)
+    jenis_kelamin: Literal["Laki-laki", "Perempuan", ""] = ""
+    agama: str = Field(default="", max_length=30)
+    alamat: str = Field(default="", max_length=300)
+    no_hp: str = Field(default="", max_length=20)
+    pendidikan_terakhir: str = Field(default="", max_length=20)
+    jurusan: str = Field(default="", max_length=80)
+    status_kepegawaian: Literal["PNS", "PPPK", "GTY", "GTT", "Honorer", ""] = ""
+    tmt: str = Field(default="", max_length=12)
+
+
 class TranskripSubjectEntry(BaseModel):
     subject: str
     nilai: float = 0
@@ -364,7 +450,23 @@ class TuAccountInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class CBTAccountInput(BaseModel):
+    username: str = Field(min_length=3, max_length=60)
+    password: str = Field(min_length=6, max_length=128)
+    name: str = Field(min_length=1, max_length=120)
+
+
 class TuAccountUpdateInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class KepsekAccountInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    username: str = Field(min_length=3, max_length=60)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class KepsekAccountUpdateInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
@@ -1014,11 +1116,29 @@ async def delete_beban_mengajar(item_id: str, user: dict = Depends(require_role(
     return {"message": "Beban mengajar dihapus"}
 
 
+async def get_effective_teaching_slots(day: str | None = None):
+    # Jadwal yang diisi guru sendiri (dengan jam ke) jadi sumber utama.
+    # Beban Mengajar (input Admin) cuma dipakai sebagai cadangan untuk
+    # kombinasi guru+hari+kelas+mapel yang BELUM ada di jadwal guru.
+    schedule_query = {"day": day} if day else {}
+    schedules_raw = await db.schedules.find(schedule_query, {"_id": 0}).to_list(2000)
+    schedule_slots = [
+        {"teacher": s["created_by"], "day": s["day"], "class_name": s["class_name"], "subject": s["subject"], "jam_awal": s["jam_awal"], "jam_akhir": s["jam_akhir"]}
+        for s in schedules_raw if s.get("jam_awal") and s.get("jam_akhir")
+    ]
+    covered = {(s["teacher"], s["day"], s["class_name"], s["subject"]) for s in schedule_slots}
+    beban_query = {"day": day} if day else {}
+    beban_raw = await db.beban_mengajar.find(beban_query, {"_id": 0}).to_list(2000)
+    beban_slots = [b for b in beban_raw if (b["teacher"], b["day"], b["class_name"], b["subject"]) not in covered]
+    return schedule_slots + beban_slots
+
+
 @api_router.get("/piket/schedule")
 async def get_piket_schedule(date: str, shift: str, user: dict = Depends(get_current_user)):
     hari = hari_dari_tanggal(date)
-    classes_in_shift = {c["name"] for c in await db.classes.find({"shift": shift}, {"_id": 0, "name": 1}).to_list(500)}
-    beban = await db.beban_mengajar.find({"day": hari}, {"_id": 0}).to_list(1000)
+    all_classes = await db.classes.find({}, {"_id": 0, "name": 1, "shift": 1}).to_list(500)
+    classes_in_shift = {c["name"] for c in all_classes if c.get("shift", "Pagi") == shift}
+    beban = await get_effective_teaching_slots(day=hari)
     slots = [b for b in beban if b["class_name"] in classes_in_shift]
     saved = await db.piket_attendance.find_one({"date": date, "shift": shift}, {"_id": 0})
     saved_lookup = {}
@@ -1166,6 +1286,142 @@ async def ensure_class_write_access(user: dict, class_name: str) -> bool:
     raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke kelas ini")
 
 
+async def ensure_kas_write_access(user: dict, class_name: str):
+    """Cuma Admin dan Sekretaris kelas itu sendiri yang boleh input/hapus transaksi kas."""
+    if user["role"] == "Admin":
+        return
+    if user["role"] == "Sekretaris" and user.get("secretary_class") == class_name:
+        return
+    raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke kelas ini")
+
+
+async def ensure_kas_read_access(user: dict, class_name: str):
+    """Admin, Sekretaris kelas itu, Wali Kelas-nya, dan siswa di kelas itu sendiri boleh lihat data kas."""
+    if user["role"] == "Admin":
+        return
+    if user["role"] == "Sekretaris" and user.get("secretary_class") == class_name:
+        return
+    if user["role"] == "Guru" and await get_homeroom_class(user) == class_name:
+        return
+    if user["role"] == "Siswa":
+        student = await db.students.find_one({"id": user.get("student_id")}, {"_id": 0, "class_name": 1})
+        if student and student.get("class_name") == class_name:
+            return
+    raise HTTPException(status_code=403, detail="Anda tidak memiliki akses ke kelas ini")
+
+
+async def ensure_kas_target_access(user: dict, class_name: str):
+    """Target kas per bulan cuma boleh diatur Admin atau Wali Kelas-nya, bukan Sekretaris."""
+    if user["role"] == "Admin":
+        return
+    if user["role"] == "Guru" and await get_homeroom_class(user) == class_name:
+        return
+    raise HTTPException(status_code=403, detail="Hanya wali kelas yang bisa mengatur target kas")
+
+
+# ================= MODUL UANG KAS KELAS =================
+
+@api_router.post("/kas/{class_name}/bayar")
+async def add_kas_bayar(class_name: str, payload: KasBayarInput, user: dict = Depends(get_current_user)):
+    await ensure_kas_write_access(user, class_name)
+    doc = {"id": str(uuid.uuid4()), "class_name": class_name, **payload.model_dump(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.kas_bayar.insert_one({**doc})
+    return doc
+
+
+@api_router.get("/kas/{class_name}/bayar")
+async def list_kas_bayar(class_name: str, bulan: str | None = None, user: dict = Depends(get_current_user)):
+    await ensure_kas_read_access(user, class_name)
+    query = {"class_name": class_name}
+    if bulan:
+        query["bulan"] = bulan
+    return await db.kas_bayar.find(query, {"_id": 0}).sort("tanggal", -1).to_list(1000)
+
+
+@api_router.delete("/kas/bayar/{item_id}")
+async def delete_kas_bayar(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.kas_bayar.find_one({"id": item_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Data pembayaran tidak ditemukan")
+    await ensure_kas_write_access(user, doc["class_name"])
+    await db.kas_bayar.delete_one({"id": item_id})
+    return {"message": "Data pembayaran dihapus"}
+
+
+@api_router.post("/kas/{class_name}/pengeluaran")
+async def add_kas_pengeluaran(class_name: str, payload: KasPengeluaranInput, user: dict = Depends(get_current_user)):
+    await ensure_kas_write_access(user, class_name)
+    doc = {"id": str(uuid.uuid4()), "class_name": class_name, **payload.model_dump(), "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.kas_pengeluaran.insert_one({**doc})
+    return doc
+
+
+@api_router.get("/kas/{class_name}/pengeluaran")
+async def list_kas_pengeluaran(class_name: str, user: dict = Depends(get_current_user)):
+    await ensure_kas_read_access(user, class_name)
+    return await db.kas_pengeluaran.find({"class_name": class_name}, {"_id": 0}).sort("tanggal", -1).to_list(1000)
+
+
+@api_router.delete("/kas/pengeluaran/{item_id}")
+async def delete_kas_pengeluaran(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.kas_pengeluaran.find_one({"id": item_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Data pengeluaran tidak ditemukan")
+    await ensure_kas_write_access(user, doc["class_name"])
+    await db.kas_pengeluaran.delete_one({"id": item_id})
+    return {"message": "Data pengeluaran dihapus"}
+
+
+@api_router.put("/kas/{class_name}/target")
+async def set_kas_target(class_name: str, payload: KasTargetInput, user: dict = Depends(get_current_user)):
+    await ensure_kas_target_access(user, class_name)
+    await db.kas_settings.update_one({"class_name": class_name}, {"$set": {"target": payload.target}}, upsert=True)
+    return {"target": payload.target}
+
+
+@api_router.get("/kas/{class_name}/target")
+async def get_kas_target(class_name: str, user: dict = Depends(get_current_user)):
+    await ensure_kas_read_access(user, class_name)
+    doc = await db.kas_settings.find_one({"class_name": class_name}, {"_id": 0})
+    return {"target": (doc or {}).get("target", 0)}
+
+
+@api_router.get("/kas/{class_name}/kurang-bayar")
+async def kas_kurang_bayar(class_name: str, bulan: str, user: dict = Depends(get_current_user)):
+    await ensure_kas_read_access(user, class_name)
+    target_doc = await db.kas_settings.find_one({"class_name": class_name}, {"_id": 0})
+    target = (target_doc or {}).get("target", 0)
+    students = await db.students.find({"class_name": class_name}, {"_id": 0, "name": 1}).sort("name", 1).to_list(200)
+    bayar_docs = await db.kas_bayar.find({"class_name": class_name, "bulan": bulan}, {"_id": 0}).to_list(500)
+    paid_map: dict[str, int] = {}
+    for b in bayar_docs:
+        paid_map[b["student_name"]] = paid_map.get(b["student_name"], 0) + b["jumlah"]
+    result = []
+    for s in students:
+        dibayar = paid_map.get(s["name"], 0)
+        if dibayar < target:
+            result.append({"student_name": s["name"], "dibayar": dibayar, "kurang": target - dibayar})
+    return {"target": target, "students": result}
+
+
+@api_router.get("/kas/{class_name}/summary")
+async def kas_summary(class_name: str, user: dict = Depends(get_current_user)):
+    await ensure_kas_read_access(user, class_name)
+    bayar_docs = await db.kas_bayar.find({"class_name": class_name}, {"_id": 0}).to_list(3000)
+    pengeluaran_docs = await db.kas_pengeluaran.find({"class_name": class_name}, {"_id": 0}).to_list(3000)
+    total_masuk = sum(d["jumlah"] for d in bayar_docs)
+    total_keluar = sum(d["jumlah"] for d in pengeluaran_docs)
+    per_bulan: dict[str, dict] = {}
+    for d in bayar_docs:
+        per_bulan.setdefault(d["bulan"], {"jumlah": 0, "orang": 0})
+        per_bulan[d["bulan"]]["jumlah"] += d["jumlah"]
+        per_bulan[d["bulan"]]["orang"] += 1
+    return {
+        "total_masuk": total_masuk, "total_keluar": total_keluar, "saldo": total_masuk - total_keluar,
+        "per_bulan": [{"bulan": k, **v} for k, v in sorted(per_bulan.items())],
+    }
+
+
 @api_router.post("/daily-attendance")
 async def save_daily_attendance(payload: DailyAttendanceInput, user: dict = Depends(get_current_user)):
     can_correct = await ensure_class_write_access(user, payload.class_name)
@@ -1274,6 +1530,22 @@ async def get_student_detail(item_id: str, user: dict = Depends(get_current_user
     return doc
 
 
+@api_router.get("/siswa/dashboard")
+async def siswa_dashboard(user: dict = Depends(require_role("Siswa"))):
+    student = await db.students.find_one({"id": user.get("student_id")}, {"_id": 0})
+    if not student:
+        raise HTTPException(status_code=404, detail="Data siswa tidak ditemukan")
+    class_name = student.get("class_name", "")
+    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    docs = await db.daily_attendance.find({"class_name": class_name, "date": {"$regex": f"^{month_prefix}"}}, {"_id": 0}).to_list(100)
+    totals = {"H": 0, "S": 0, "I": 0, "A": 0}
+    for doc in docs:
+        for e in doc.get("entries", []):
+            if e["student"] == student["name"] and e["status"] in totals:
+                totals[e["status"]] += 1
+    return {"class_name": class_name, "presensi_bulan_ini": totals}
+
+
 @api_router.put("/students/{item_id}/biodata")
 async def update_student_biodata(item_id: str, payload: BiodataInput, user: dict = Depends(require_role("Admin", "TU"))):
     result = await db.students.update_one({"id": item_id}, {"$set": payload.model_dump()})
@@ -1349,6 +1621,14 @@ async def set_teacher_nip(item_id: str, payload: TeacherNipInput, user: dict = D
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
     return {"message": "NIP diperbarui"}
+
+
+@api_router.put("/teachers/{item_id}/biodata")
+async def update_teacher_biodata(item_id: str, payload: TeacherBiodataInput, user: dict = Depends(require_role("Admin", "TU"))):
+    result = await db.teachers.update_one({"id": item_id}, {"$set": payload.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Data guru tidak ditemukan")
+    return {"message": "Biodata guru diperbarui"}
 
 
 # --- Transkrip nilai (Buku Induk bagian B) ---
@@ -1573,12 +1853,150 @@ async def reset_tu_password(item_id: str, payload: TeacherPasswordInput, user: d
     return {"message": "Password TU berhasil diperbarui"}
 
 
+@api_router.post("/cbt-accounts")
+async def create_cbt_account(payload: CBTAccountInput, user: dict = Depends(require_role("Admin"))):
+    username = payload.username.strip().lower()
+    if await db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    user_id = str(uuid.uuid4())
+    await db.users.insert_one({"id": user_id, "username": username, "name": payload.name.strip(), "role": "CBT", "password_hash": hash_password(payload.password), "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"message": "Akun panitia CBT berhasil dibuat", "id": user_id}
+
+
+@api_router.get("/cbt-accounts")
+async def list_cbt_accounts(user: dict = Depends(require_role("Admin"))):
+    return await db.users.find({"role": "CBT"}, {"_id": 0, "password_hash": 0}).to_list(100)
+
+
+@api_router.put("/cbt-accounts/{item_id}")
+async def update_cbt_account(item_id: str, payload: TuAccountUpdateInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.users.update_one({"id": item_id, "role": "CBT"}, {"$set": {"name": payload.name.strip()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Akun panitia CBT tidak ditemukan")
+    return {"message": "Akun panitia CBT diperbarui"}
+
+
+@api_router.put("/cbt-accounts/{item_id}/password")
+async def reset_cbt_password(item_id: str, payload: TeacherPasswordInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.users.update_one({"id": item_id, "role": "CBT"}, {"$set": {"password_hash": hash_password(payload.password)}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Akun panitia CBT tidak ditemukan")
+    return {"message": "Password panitia CBT berhasil diperbarui"}
+
+
 @api_router.delete("/tu-accounts/{item_id}")
 async def delete_tu_account(item_id: str, user: dict = Depends(require_role("Admin"))):
     result = await db.users.delete_one({"id": item_id, "role": "TU"})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Akun TU tidak ditemukan")
     return {"message": "Akun TU dihapus"}
+
+
+# --- Akun Kepala Sekolah (dibuat oleh Admin) ---
+
+@api_router.post("/kepsek-accounts")
+async def create_kepsek_account(payload: KepsekAccountInput, user: dict = Depends(require_role("Admin"))):
+    username = payload.username.strip().lower()
+    if await db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    user_id = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": user_id, "username": username, "name": payload.name.strip(),
+        "role": "Kepsek", "password_hash": hash_password(payload.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"message": "Akun kepala sekolah berhasil dibuat", "id": user_id}
+
+
+@api_router.get("/kepsek-accounts")
+async def list_kepsek_accounts(user: dict = Depends(require_role("Admin"))):
+    return await db.users.find({"role": "Kepsek"}, {"_id": 0, "password_hash": 0}).to_list(10)
+
+
+@api_router.put("/kepsek-accounts/{item_id}")
+async def update_kepsek_account(item_id: str, payload: KepsekAccountUpdateInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.users.update_one({"id": item_id, "role": "Kepsek"}, {"$set": {"name": payload.name.strip()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Akun kepala sekolah tidak ditemukan")
+    return {"message": "Akun kepala sekolah diperbarui"}
+
+
+@api_router.put("/kepsek-accounts/{item_id}/password")
+async def reset_kepsek_password(item_id: str, payload: TeacherPasswordInput, user: dict = Depends(require_role("Admin"))):
+    result = await db.users.update_one({"id": item_id, "role": "Kepsek"}, {"$set": {"password_hash": hash_password(payload.password)}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Akun kepala sekolah tidak ditemukan")
+    return {"message": "Password kepala sekolah berhasil diperbarui"}
+
+
+@api_router.delete("/kepsek-accounts/{item_id}")
+async def delete_kepsek_account(item_id: str, user: dict = Depends(require_role("Admin"))):
+    result = await db.users.delete_one({"id": item_id, "role": "Kepsek"})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Akun kepala sekolah tidak ditemukan")
+    return {"message": "Akun kepala sekolah dihapus"}
+
+
+# --- Endpoint khusus Kepala Sekolah (read-only) ---
+
+@api_router.get("/daily-attendance/summary")
+async def daily_attendance_summary(bulan: str | None = None, user: dict = Depends(require_role("Admin", "Kepsek", "TU"))):
+    """Rekap kehadiran harian per kelas. Tanpa bulan = hari ini. Dengan bulan (YYYY-MM) = seluruh bulan itu."""
+    query: dict = {}
+    if bulan:
+        query["date"] = {"$regex": f"^{bulan}"}
+    else:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        query["date"] = today_str
+
+    docs = await db.daily_attendance.find(query, {"_id": 0}).to_list(2000)
+    summary: dict[str, dict] = {}
+    for doc in docs:
+        cls = doc.get("class_name", "")
+        if cls not in summary:
+            summary[cls] = {"class_name": cls, "hadir": 0, "sakit": 0, "izin": 0, "alfa": 0}
+        for e in doc.get("entries", []):
+            status = e.get("status", "")
+            if status == "H":
+                summary[cls]["hadir"] += 1
+            elif status == "S":
+                summary[cls]["sakit"] += 1
+            elif status == "I":
+                summary[cls]["izin"] += 1
+            elif status == "A":
+                summary[cls]["alfa"] += 1
+    return sorted(summary.values(), key=lambda x: x["class_name"])
+
+
+@api_router.get("/pelanggaran-siswa/statistik")
+async def pelanggaran_statistik(bulan: str | None = None, user: dict = Depends(require_role("Admin", "Kepsek", "TU"))):
+    """Statistik pelanggaran siswa: total dan daftar siswa terbanyak. Opsional filter bulan (YYYY-MM)."""
+    query: dict = {}
+    if bulan:
+        query["date"] = {"$regex": f"^{bulan}"}
+
+    docs = await db.pelanggaran_siswa.find(query, {"_id": 0}).to_list(5000)
+    total = len(docs)
+    count_map: dict[str, dict] = {}
+    for doc in docs:
+        key = doc.get("student_name", "")
+        if key not in count_map:
+            count_map[key] = {"student_name": key, "class_name": doc.get("class_name", ""), "total": 0}
+        count_map[key]["total"] += 1
+
+    terbanyak = sorted(count_map.values(), key=lambda x: x["total"], reverse=True)[:10]
+    return {"total": total, "terbanyak": terbanyak}
+
+
+@api_router.get("/grades/rekap-kepsek")
+async def grades_rekap_kepsek(class_name: str, subject: str, assessment_type: str, user: dict = Depends(require_role("Admin", "Kepsek"))):
+    """Rekap nilai semua tanggal untuk kelas dan mapel tertentu (read-only, Kepsek)."""
+    docs = await db.grades.find({"class_name": class_name, "subject": subject, "assessment_type": assessment_type}, {"_id": 0}).sort("date", -1).to_list(100)
+    entries = []
+    for doc in docs:
+        for e in doc.get("entries", []):
+            entries.append({"student": e["student"], "score": e["score"], "date": doc["date"]})
+    return {"class_name": class_name, "subject": subject, "assessment_type": assessment_type, "entries": entries}
 
 
 # --- Laporan (export Excel) ---
@@ -1627,13 +2045,14 @@ async def compute_jam_berdiri(bulan: str):
     num_weeks = -(-days_in_month // 7)
 
     docs = await db.piket_attendance.find({"date": {"$regex": f"^{bulan}"}}, {"_id": 0}).sort("date", 1).to_list(1000)
-    beban = await db.beban_mengajar.find({}, {"_id": 0}).to_list(2000)
+    beban = await get_effective_teaching_slots()
 
     target_jam: dict[str, int] = {}
     for b in beban:
         target_jam[b["teacher"]] = target_jam.get(b["teacher"], 0) + (b["jam_akhir"] - b["jam_awal"] + 1)
 
-    per_ts_date: dict[tuple[str, str], dict[str, int]] = {}
+    per_teacher_date: dict[str, dict[str, int]] = {}
+    per_teacher_subjects: dict[str, set] = {}
     piket_pagi: dict[str, int] = {}
     piket_siang: dict[str, int] = {}
     for doc in docs:
@@ -1641,11 +2060,11 @@ async def compute_jam_berdiri(bulan: str):
             bucket = piket_pagi if doc["shift"] == "Pagi" else piket_siang
             bucket[name] = bucket.get(name, 0) + 1
         for e in doc.get("entries", []):
-            key = (e["teacher"], e["subject"])
-            per_ts_date.setdefault(key, {})
-            per_ts_date[key][doc["date"]] = per_ts_date[key].get(doc["date"], 0) + len(e.get("jam_hadir", []))
+            per_teacher_date.setdefault(e["teacher"], {})
+            per_teacher_date[e["teacher"]][doc["date"]] = per_teacher_date[e["teacher"]].get(doc["date"], 0) + len(e.get("jam_hadir", []))
+            per_teacher_subjects.setdefault(e["teacher"], set()).add(e["subject"])
 
-    row_keys = sorted(per_ts_date.keys(), key=lambda k: (k[0], k[1]))
+    teachers = sorted(per_teacher_date.keys())
 
     week_dates = []
     for w in range(num_weeks):
@@ -1655,8 +2074,8 @@ async def compute_jam_berdiri(bulan: str):
         week_dates.append(dates_this_week)
 
     rows = []
-    for teacher, subject in row_keys:
-        dates_map = per_ts_date.get((teacher, subject), {})
+    for teacher in teachers:
+        dates_map = per_teacher_date.get(teacher, {})
         week_values = []
         total_berdiri = 0
         for dates_this_week in week_dates:
@@ -1670,7 +2089,7 @@ async def compute_jam_berdiri(bulan: str):
             week_values.append({"days": day_values, "total": week_total})
             total_berdiri += week_total
         rows.append({
-            "teacher": teacher, "subject": subject, "jml_jam": target_jam.get(teacher, 0),
+            "teacher": teacher, "subject": ", ".join(sorted(per_teacher_subjects.get(teacher, []))), "jml_jam": target_jam.get(teacher, 0),
             "weeks": week_values, "total_berdiri": total_berdiri,
             "piket_pagi": piket_pagi.get(teacher, 0), "piket_siang": piket_siang.get(teacher, 0),
         })
@@ -1954,7 +2373,8 @@ async def save_grades(payload: GradesInput, user: dict = Depends(get_current_use
 
 @api_router.get("/grades")
 async def get_grades(date: str, class_name: str, subject: str, assessment_type: str, user: dict = Depends(get_current_user)):
-    await ensure_own_class_subject(user, class_name, subject)
+    if user["role"] != "Kepsek":
+        await ensure_own_class_subject(user, class_name, subject)
     doc = await db.grades.find_one({"date": date, "class_name": class_name, "subject": subject, "assessment_type": assessment_type}, {"_id": 0})
     return doc or {"date": date, "class_name": class_name, "subject": subject, "assessment_type": assessment_type, "entries": []}
 
@@ -1975,9 +2395,12 @@ async def list_journals(user: dict = Depends(get_current_user)):
 
 
 @api_router.get("/schedules")
-async def list_schedules(user: dict = Depends(get_current_user)):
-    # Guru hanya melihat jadwal miliknya sendiri; Admin melihat semua (untuk keperluan pengecekan/oversight).
-    query = {} if user["role"] == "Admin" else {"created_by": user["name"]}
+async def list_schedules(teacher: str | None = None, user: dict = Depends(get_current_user)):
+    # Guru hanya melihat jadwal miliknya sendiri; Admin & Kepsek melihat semua.
+    if user["role"] in ("Admin", "Kepsek"):
+        query = {"created_by": teacher} if teacher else {}
+    else:
+        query = {"created_by": user["name"]}
     rows = await db.schedules.find(query, {"_id": 0}).to_list(500)
     return sorted(rows, key=lambda r: (DAY_ORDER.get(r["day"], 9), r["start_time"]))
 
@@ -2014,7 +2437,7 @@ STATUS_LABELS = {"H": "Hadir", "S": "Sakit", "I": "Izin", "A": "Alpa"}
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
-    if user["role"] == "Admin":
+    if user["role"] in ("Admin", "Kepsek"):
         classes = await db.classes.find({}, {"_id": 0}).to_list(200)
         students = await db.students.find({}, {"_id": 0}).to_list(1000)
         journals = await db.journals.find({}, {"_id": 0}).to_list(500)
@@ -2179,6 +2602,502 @@ async def print_report(kind: str = "attendance", class_name: str | None = None, 
     body = "".join(f"<tr><td>{r.no}</td><td>{r.student}</td><td>{r.class_name}</td><td>{r.subject}</td><td>{r.date}</td><td>{r.status}</td><td>{r.value}</td></tr>" for r in rows) or "<tr><td colspan='7'>Belum ada data tersimpan untuk laporan ini.</td></tr>"
     logo_url = os.environ.get("FRONTEND_URL", "https://educator-dashboard-4.preview.emergentagent.com") + "/logo-smp.png"
     return HTMLResponse(f"""<!doctype html><html lang='id'><head><meta charset='utf-8'><title>{title}</title><style>body{{font-family:Arial,sans-serif;color:#19342a;padding:36px}}h1{{font-size:22px;margin-bottom:4px}}p{{color:#68776e;font-size:12px}}.head{{display:flex;align-items:center;gap:14px}}table{{width:100%;border-collapse:collapse;margin-top:26px}}th,td{{border:1px solid #cfded3;padding:9px;text-align:left;font-size:12px}}th{{background:#e2f0e8}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>Cetak laporan</button><div class='head'><img src='{logo_url}' alt='Logo sekolah' style='height:72px'><div><h1>{school['school']}</h1><h2 style='margin:4px 0'>{title}</h2><p style='margin:0'>{school['address']} · Disiapkan oleh {user['name']}</p><p style='margin:4px 0 0'>{meta_line}</p></div></div><table><thead><tr><th>No</th><th>Nama Siswa</th><th>Kelas</th><th>Mapel</th><th>Tanggal</th><th>Status</th><th>Nilai / Materi</th></tr></thead><tbody>{body}</tbody></table></body></html>""")
+
+
+# ================= MODUL CBT (UJIAN ONLINE) =================
+
+def gen_username(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]", "", name.lower())[:10] or "siswa"
+    return f"{base}{secrets.token_hex(2)}"
+
+
+def gen_password_cbt() -> str:
+    return "".join(secrets.choice("0123456789") for _ in range(6))
+
+
+def make_cbt_token(kartu: dict) -> str:
+    payload = {
+        "sub": kartu["id"], "kegiatan_id": kartu["kegiatan_id"], "student_name": kartu["student_name"],
+        "exp": datetime.now(timezone.utc) + timedelta(hours=4), "type": "cbt",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def get_cbt_session(request: Request) -> dict:
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    if not token:
+        raise HTTPException(status_code=401, detail="Sesi CBT tidak ditemukan")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "cbt":
+            raise HTTPException(status_code=401, detail="Token tidak valid untuk sesi CBT")
+        kartu = await db.cbt_kartu.find_one({"id": payload.get("sub")}, {"_id": 0, "password_hash": 0})
+        if not kartu:
+            raise HTTPException(status_code=401, detail="Kartu ujian tidak ditemukan")
+        return kartu
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Sesi ujian berakhir, silakan login lagi") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Sesi ujian tidak valid") from exc
+
+
+# --- Paket Soal (Admin, Guru & panitia CBT) ---
+
+@api_router.post("/cbt/paket")
+async def add_paket(payload: PaketSoalInput, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "created_by": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.cbt_paket.insert_one({**doc})
+    return doc
+
+
+@api_router.get("/cbt/paket")
+async def list_paket(mapel: str | None = None, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    query: dict = {"mapel": mapel} if mapel else {}
+    if user["role"] == "Guru":
+        query["created_by"] = user["name"]
+    paket_list = await db.cbt_paket.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    for p in paket_list:
+        p["jumlah_soal"] = await db.cbt_soal.count_documents({"paket_id": p["id"]})
+    return paket_list
+
+
+@api_router.delete("/cbt/paket/{item_id}")
+async def delete_paket(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    await db.cbt_paket.delete_one({"id": item_id})
+    await db.cbt_soal.delete_many({"paket_id": item_id})
+    return {"message": "Paket soal dihapus"}
+
+
+@api_router.get("/cbt/paket/{item_id}/soal")
+async def list_soal_paket(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    return await db.cbt_soal.find({"paket_id": item_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+
+@api_router.post("/cbt/soal")
+async def add_soal(payload: SoalInput, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    if payload.jawaban_benar >= len(payload.pilihan):
+        raise HTTPException(status_code=400, detail="Indeks jawaban benar di luar jumlah pilihan")
+    if not await db.cbt_paket.find_one({"id": payload.paket_id}):
+        raise HTTPException(status_code=404, detail="Paket soal tidak ditemukan")
+    doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "created_by": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.cbt_soal.insert_one({**doc})
+    return doc
+
+
+@api_router.put("/cbt/soal/{item_id}")
+async def update_soal(item_id: str, payload: SoalInput, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    if payload.jawaban_benar >= len(payload.pilihan):
+        raise HTTPException(status_code=400, detail="Indeks jawaban benar di luar jumlah pilihan")
+    result = await db.cbt_soal.update_one({"id": item_id}, {"$set": payload.model_dump()})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Soal tidak ditemukan")
+    return {"message": "Soal diperbarui"}
+
+
+@api_router.delete("/cbt/soal/{item_id}")
+async def delete_soal(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    await db.cbt_soal.delete_one({"id": item_id})
+    return {"message": "Soal dihapus"}
+
+
+@api_router.post("/cbt/soal/upload-gambar")
+async def upload_gambar_soal(file: UploadFile = File(...), user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    content = await file.read()
+    if len(content) > 2_000_000:
+        raise HTTPException(status_code=400, detail="Ukuran gambar maksimal 2MB")
+    b64 = base64.b64encode(content).decode()
+    mime = file.content_type or "image/png"
+    return {"gambar": f"data:{mime};base64,{b64}"}
+
+
+@api_router.get("/cbt/soal/template")
+async def soal_template(user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Bank Soal"
+    headers = ["Pertanyaan", "Pilihan A", "Pilihan B", "Pilihan C", "Pilihan D", "Pilihan E", "Jawaban Benar", "Poin", "URL Gambar"]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sheet.append(["Induk organisasi bulu tangkis Indonesia adalah...", "PBSI", "PSSI", "PERBASI", "PBVSI", "", "A", 1, ""])
+    sheet.append(["Berapa jumlah pemain dalam satu tim sepak bola?", "9", "10", "11", "12", "", "C", 1, "https://contoh.com/gambar.png"])
+    for col_letter, width in zip("ABCDEFGHI", [42, 16, 16, 16, 16, 16, 14, 8, 32]):
+        sheet.column_dimensions[col_letter].width = width
+    r = 5
+    sheet.cell(row=r, column=1, value="Keterangan:").font = Font(bold=True)
+    for line in [
+        "- 1 file = 1 paket soal untuk 1 mapel. Nama paket & mapel diisi saat impor, bukan di file ini.",
+        "- Pilihan E boleh dikosongkan kalau soal cuma 4 pilihan (A-D).",
+        "- Jawaban Benar diisi huruf saja (A/B/C/D/E), sesuai pilihan yang benar.",
+        "- URL Gambar boleh dikosongkan kalau soal tidak pakai gambar.",
+        "- Poin default 1 kalau dikosongkan.",
+        "- Jangan ubah nama judul kolom di baris pertama.",
+    ]:
+        r += 1
+        sheet.cell(row=r, column=1, value=line)
+    stream = io.BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": 'attachment; filename="template-bank-soal.xlsx"'})
+
+
+@api_router.post("/cbt/paket/import")
+async def import_paket(nama: str, mapel: str, file: UploadFile = File(...), user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    content = await file.read()
+    try:
+        workbook = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="File tidak bisa dibaca, pastikan formatnya .xlsx") from exc
+    sheet = workbook.active
+    headers = [str(c.value or "").strip().lower() for c in sheet[1]]
+
+    def col(name: str):
+        try:
+            return headers.index(name)
+        except ValueError:
+            return None
+
+    idx_pertanyaan, idx_gambar = col("pertanyaan"), col("url gambar")
+    idx_jawaban, idx_poin = col("jawaban benar"), col("poin")
+    pilihan_idx = {letter: col(f"pilihan {letter}") for letter in "abcde" if col(f"pilihan {letter}") is not None}
+    if idx_pertanyaan is None or idx_jawaban is None or len(pilihan_idx) < 2:
+        raise HTTPException(status_code=400, detail="Format kolom tidak sesuai template. Unduh template terbaru dan jangan ubah judul kolomnya.")
+
+    rows_parsed, errors = [], []
+    for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        pertanyaan = str(row[idx_pertanyaan] or "").strip()
+        if not pertanyaan:
+            continue
+        pilihan = [str(row[pilihan_idx[letter]]).strip() for letter in sorted(pilihan_idx) if row[pilihan_idx[letter]] not in (None, "")]
+        if len(pilihan) < 2:
+            errors.append(f"Baris {row_num}: pilihan jawaban kurang dari 2, dilewati")
+            continue
+        jawaban_letter = str(row[idx_jawaban] or "").strip().upper()
+        if jawaban_letter not in "ABCDE"[:len(pilihan)]:
+            errors.append(f"Baris {row_num}: kolom 'Jawaban Benar' ({jawaban_letter or '-'}) tidak sesuai jumlah pilihan, dilewati")
+            continue
+        poin = 1
+        if idx_poin is not None and row[idx_poin] not in (None, ""):
+            try:
+                poin = int(row[idx_poin])
+            except (TypeError, ValueError):
+                poin = 1
+        gambar = str(row[idx_gambar]).strip() if idx_gambar is not None and row[idx_gambar] not in (None, "") else ""
+        rows_parsed.append({"pertanyaan": pertanyaan, "gambar": gambar, "pilihan": pilihan, "jawaban_benar": "ABCDE".index(jawaban_letter), "poin": poin})
+
+    if not rows_parsed:
+        raise HTTPException(status_code=400, detail="Tidak ada baris soal yang valid untuk diimpor. " + "; ".join(errors[:5]))
+
+    paket_doc = {"id": str(uuid.uuid4()), "nama": nama, "mapel": mapel, "created_by": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.cbt_paket.insert_one({**paket_doc})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    docs = [{"id": str(uuid.uuid4()), "paket_id": paket_doc["id"], "created_by": user["name"], "created_at": now_iso, **r} for r in rows_parsed]
+    await db.cbt_soal.insert_many([dict(d) for d in docs])
+    return {"paket_id": paket_doc["id"], "inserted": len(docs), "errors": errors}
+
+
+# --- Kegiatan Ujian (Admin, Guru & panitia CBT) ---
+
+async def kegiatan_dengan_progres(k: dict) -> dict:
+    ujian_list = await db.cbt_ujian.find({"kegiatan_id": k["id"]}, {"_id": 0}).to_list(100)
+    mapel_terisi = {u["mapel"] for u in ujian_list}
+    k["mapel_terisi"] = sorted(mapel_terisi)
+    k["mapel_belum"] = sorted(set(k["mapel_list"]) - mapel_terisi)
+    k["siap_dijadwalkan"] = len(k["mapel_belum"]) == 0
+    return k
+
+
+@api_router.post("/cbt/kegiatan")
+async def add_kegiatan(payload: KegiatanInput, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "mulai": "", "selesai": "", "created_by": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.cbt_kegiatan.insert_one({**doc})
+    return doc
+
+
+@api_router.get("/cbt/kegiatan")
+async def list_kegiatan(user: dict = Depends(require_role("Admin", "Guru", "TU", "CBT"))):
+    kegiatan_list = await db.cbt_kegiatan.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return [await kegiatan_dengan_progres(k) for k in kegiatan_list]
+
+
+@api_router.get("/cbt/kegiatan/{item_id}")
+async def get_kegiatan(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "TU", "CBT"))):
+    k = await db.cbt_kegiatan.find_one({"id": item_id}, {"_id": 0})
+    if not k:
+        raise HTTPException(status_code=404, detail="Kegiatan tidak ditemukan")
+    return await kegiatan_dengan_progres(k)
+
+
+@api_router.put("/cbt/kegiatan/{item_id}/jadwal")
+async def set_jadwal_kegiatan(item_id: str, payload: KegiatanJadwalInput, user: dict = Depends(require_role("Admin", "CBT"))):
+    k = await db.cbt_kegiatan.find_one({"id": item_id}, {"_id": 0})
+    if not k:
+        raise HTTPException(status_code=404, detail="Kegiatan tidak ditemukan")
+    k = await kegiatan_dengan_progres(k)
+    if not k["siap_dijadwalkan"]:
+        raise HTTPException(status_code=400, detail=f"Belum semua mapel kirim paket soal. Masih menunggu: {', '.join(k['mapel_belum'])}")
+    await db.cbt_kegiatan.update_one({"id": item_id}, {"$set": {"mulai": payload.mulai, "selesai": payload.selesai}})
+    return {"message": "Jadwal kegiatan ujian disimpan"}
+
+
+@api_router.delete("/cbt/kegiatan/{item_id}")
+async def delete_kegiatan(item_id: str, user: dict = Depends(require_role("Admin", "CBT"))):
+    await db.cbt_kegiatan.delete_one({"id": item_id})
+    ujian_ids = [u["id"] for u in await db.cbt_ujian.find({"kegiatan_id": item_id}, {"_id": 0, "id": 1}).to_list(100)]
+    await db.cbt_ujian.delete_many({"kegiatan_id": item_id})
+    await db.cbt_kartu.delete_many({"kegiatan_id": item_id})
+    await db.cbt_hasil.delete_many({"ujian_id": {"$in": ujian_ids}})
+    return {"message": "Kegiatan ujian dihapus"}
+
+
+@api_router.post("/cbt/kegiatan/{kegiatan_id}/ujian")
+async def submit_ujian_mapel(kegiatan_id: str, payload: UjianSubmitInput, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    kegiatan = await db.cbt_kegiatan.find_one({"id": kegiatan_id}, {"_id": 0})
+    if not kegiatan:
+        raise HTTPException(status_code=404, detail="Kegiatan tidak ditemukan")
+    if payload.mapel not in kegiatan["mapel_list"]:
+        raise HTTPException(status_code=400, detail="Mapel ini bukan bagian dari kegiatan ujian tersebut")
+    if not await db.cbt_paket.find_one({"id": payload.paket_id}):
+        raise HTTPException(status_code=404, detail="Paket soal tidak ditemukan")
+    await db.cbt_ujian.delete_many({"kegiatan_id": kegiatan_id, "mapel": payload.mapel})
+    doc = {"id": str(uuid.uuid4()), "kegiatan_id": kegiatan_id, **payload.model_dump(), "created_by": user["name"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.cbt_ujian.insert_one({**doc})
+    return doc
+
+
+@api_router.get("/cbt/kegiatan/{kegiatan_id}/ujian")
+async def list_ujian_kegiatan(kegiatan_id: str, user: dict = Depends(require_role("Admin", "Guru", "TU", "CBT"))):
+    return await db.cbt_ujian.find({"kegiatan_id": kegiatan_id}, {"_id": 0}).sort("mapel", 1).to_list(100)
+
+
+@api_router.delete("/cbt/ujian/{item_id}")
+async def delete_ujian(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    await db.cbt_ujian.delete_one({"id": item_id})
+    await db.cbt_hasil.delete_many({"ujian_id": item_id})
+    return {"message": "Paket soal untuk mapel ini dibatalkan dari kegiatan"}
+
+
+@api_router.get("/cbt/ujian/{item_id}/hasil")
+async def hasil_ujian(item_id: str, user: dict = Depends(require_role("Admin", "Guru", "CBT"))):
+    return await db.cbt_hasil.find({"ujian_id": item_id}, {"_id": 0}).sort("student_name", 1).to_list(500)
+
+
+@api_router.get("/cbt/hasil-angkatan")
+async def hasil_angkatan(angkatan: str, tipe: str | None = None, user: dict = Depends(require_role("Admin", "CBT"))):
+    query: dict = {"class_name": {"$regex": f"^{re.escape(angkatan)}"}}
+    if tipe:
+        query["tipe"] = tipe
+    kegiatan_list = await db.cbt_kegiatan.find(query, {"_id": 0}).to_list(200)
+    kegiatan_ids = [k["id"] for k in kegiatan_list]
+    kegiatan_map = {k["id"]: k for k in kegiatan_list}
+    ujian_list = await db.cbt_ujian.find({"kegiatan_id": {"$in": kegiatan_ids}}, {"_id": 0}).to_list(1000)
+    ujian_map = {u["id"]: u for u in ujian_list}
+    hasil_docs = await db.cbt_hasil.find({"ujian_id": {"$in": list(ujian_map.keys())}}, {"_id": 0}).to_list(5000)
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Hasil CBT"
+    sheet.append(["Angkatan", angkatan, "Tipe", tipe or "Semua"])
+    sheet.append(["Kegiatan", "Mapel", "Kelas", "Nama Siswa", "Nilai", "Pelanggaran", "Status"])
+    for cell in sheet[2]:
+        cell.font = Font(bold=True)
+
+    def sort_key(h):
+        u = ujian_map.get(h["ujian_id"], {})
+        k = kegiatan_map.get(u.get("kegiatan_id"), {})
+        return (k.get("nama", ""), u.get("mapel", ""), h["student_name"])
+
+    for h in sorted(hasil_docs, key=sort_key):
+        u = ujian_map.get(h["ujian_id"], {})
+        k = kegiatan_map.get(u.get("kegiatan_id"), {})
+        sheet.append([k.get("nama", "-"), u.get("mapel", "-"), k.get("class_name", "-"), h["student_name"], h.get("nilai") if h.get("nilai") is not None else "-", h.get("pelanggaran", 0), "Selesai" if h.get("selesai_at") else "Belum selesai"])
+    for col_letter, width in zip("ABCDEFG", [26, 16, 10, 24, 8, 12, 14]):
+        sheet.column_dimensions[col_letter].width = width
+    stream = io.BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="hasil-cbt-angkatan-{angkatan}.xlsx"'})
+
+
+# --- Kartu Ujian: satu kartu untuk satu kegiatan (semua mapel di dalamnya) ---
+
+@api_router.post("/cbt/kartu/generate")
+async def generate_kartu(kegiatan_id: str, user: dict = Depends(require_role("Admin", "TU"))):
+    kegiatan = await db.cbt_kegiatan.find_one({"id": kegiatan_id}, {"_id": 0})
+    if not kegiatan:
+        raise HTTPException(status_code=404, detail="Kegiatan tidak ditemukan")
+    kegiatan = await kegiatan_dengan_progres(kegiatan)
+    if not kegiatan["siap_dijadwalkan"]:
+        raise HTTPException(status_code=400, detail=f"Belum semua mapel kirim paket soal. Masih menunggu: {', '.join(kegiatan['mapel_belum'])}")
+    if not kegiatan.get("mulai") or not kegiatan.get("selesai"):
+        raise HTTPException(status_code=400, detail="Jadwal kegiatan (mulai & selesai) belum diatur")
+    students = await db.students.find({"class_name": kegiatan["class_name"]}, {"_id": 0, "name": 1}).sort("name", 1).to_list(200)
+    await db.cbt_kartu.delete_many({"kegiatan_id": kegiatan_id})
+    ujian_ids = [u["id"] for u in await db.cbt_ujian.find({"kegiatan_id": kegiatan_id}, {"_id": 0, "id": 1}).to_list(100)]
+    await db.cbt_hasil.delete_many({"ujian_id": {"$in": ujian_ids}})
+    cards = []
+    for s in students:
+        password = gen_password_cbt()
+        cards.append({
+            "id": str(uuid.uuid4()), "kegiatan_id": kegiatan_id, "student_name": s["name"],
+            "username": gen_username(s["name"]), "password_hash": hash_password(password),
+            "password_plain": password, "status": "belum", "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    if cards:
+        await db.cbt_kartu.insert_many([dict(c) for c in cards])
+    for c in cards:
+        c.pop("password_hash", None)
+    return cards
+
+
+@api_router.get("/cbt/kartu")
+async def list_kartu(kegiatan_id: str, user: dict = Depends(require_role("Admin", "TU"))):
+    return await db.cbt_kartu.find({"kegiatan_id": kegiatan_id}, {"_id": 0, "password_hash": 0}).sort("student_name", 1).to_list(200)
+
+
+@api_router.delete("/cbt/kartu/{item_id}")
+async def delete_kartu(item_id: str, user: dict = Depends(require_role("Admin", "TU"))):
+    await db.cbt_kartu.delete_one({"id": item_id})
+    return {"message": "Kartu dihapus"}
+
+
+# --- Pengawasan langsung & reset (Admin & panitia CBT) ---
+
+@api_router.get("/cbt/monitor")
+async def monitor_ujian(kegiatan_id: str, user: dict = Depends(require_role("Admin", "CBT"))):
+    ujian_list = await db.cbt_ujian.find({"kegiatan_id": kegiatan_id}, {"_id": 0}).to_list(100)
+    ujian_map = {u["id"]: u for u in ujian_list}
+    hasil_docs = await db.cbt_hasil.find({"ujian_id": {"$in": list(ujian_map.keys())}}, {"_id": 0}).sort("mulai_at", -1).to_list(1000)
+    now = datetime.now(timezone.utc)
+    for h in hasil_docs:
+        h["mapel"] = ujian_map.get(h["ujian_id"], {}).get("mapel", "-")
+        mulai = datetime.fromisoformat(h["mulai_at"])
+        h["durasi_kerja_detik"] = int((now - mulai).total_seconds()) if not h.get("selesai_at") else int((datetime.fromisoformat(h["selesai_at"]) - mulai).total_seconds())
+    return hasil_docs
+
+
+@api_router.post("/cbt/reset/{hasil_id}")
+async def reset_hasil(hasil_id: str, user: dict = Depends(require_role("Admin", "CBT"))):
+    hasil = await db.cbt_hasil.find_one({"id": hasil_id}, {"_id": 0})
+    if not hasil:
+        raise HTTPException(status_code=404, detail="Data pengerjaan tidak ditemukan")
+    await db.cbt_hasil.delete_one({"id": hasil_id})
+    await db.cbt_kartu.update_one({"id": hasil["kartu_id"]}, {"$set": {"status": "belum"}})
+    return {"message": "Sesi ujian mapel ini sudah direset, siswa bisa mengerjakan ulang dari awal"}
+
+
+# --- Alur ujian untuk siswa (login terpisah pakai kartu, satu kartu banyak mapel) ---
+
+@api_router.post("/cbt/login")
+async def cbt_login(payload: CBTLoginInput):
+    kartu = await db.cbt_kartu.find_one({"username": payload.username})
+    if not kartu or not verify_password(payload.password, kartu["password_hash"]):
+        raise HTTPException(status_code=401, detail="Username atau password salah")
+    kegiatan = await db.cbt_kegiatan.find_one({"id": kartu["kegiatan_id"]}, {"_id": 0})
+    if not kegiatan:
+        raise HTTPException(status_code=404, detail="Kegiatan untuk kartu ini tidak ditemukan")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if kegiatan.get("mulai") and now_iso < kegiatan["mulai"]:
+        raise HTTPException(status_code=403, detail=f"Ujian belum dimulai. Jadwal mulai: {kegiatan['mulai']}")
+    if kegiatan.get("selesai") and now_iso > kegiatan["selesai"]:
+        raise HTTPException(status_code=403, detail="Waktu ujian sudah berakhir")
+    token = make_cbt_token(kartu)
+    return {"access_token": token, "student_name": kartu["student_name"], "kegiatan": {"id": kegiatan["id"], "nama": kegiatan["nama"], "durasi_menit": kegiatan["durasi_menit"]}}
+
+
+@api_router.get("/cbt/daftar-ujian")
+async def daftar_ujian_siswa(session: dict = Depends(get_cbt_session)):
+    ujian_list = await db.cbt_ujian.find({"kegiatan_id": session["kegiatan_id"]}, {"_id": 0}).sort("mapel", 1).to_list(100)
+    hasil_docs = await db.cbt_hasil.find({"kartu_id": session["id"]}, {"_id": 0}).to_list(100)
+    selesai_map = {h["ujian_id"]: h for h in hasil_docs}
+    return [{"id": u["id"], "mapel": u["mapel"], "selesai": bool(selesai_map.get(u["id"], {}).get("selesai_at")), "nilai": selesai_map.get(u["id"], {}).get("nilai")} for u in ujian_list]
+
+
+@api_router.get("/cbt/soal-ujian")
+async def get_soal_ujian(ujian_id: str, session: dict = Depends(get_cbt_session)):
+    ujian = await db.cbt_ujian.find_one({"id": ujian_id, "kegiatan_id": session["kegiatan_id"]}, {"_id": 0})
+    if not ujian:
+        raise HTTPException(status_code=404, detail="Ujian tidak ditemukan")
+    kegiatan = await db.cbt_kegiatan.find_one({"id": session["kegiatan_id"]}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if kegiatan and kegiatan.get("selesai") and now_iso > kegiatan["selesai"]:
+        raise HTTPException(status_code=403, detail="Waktu ujian sudah berakhir")
+    hasil = await db.cbt_hasil.find_one({"kartu_id": session["id"], "ujian_id": ujian_id})
+    soal_docs = await db.cbt_soal.find({"paket_id": ujian["paket_id"]}, {"_id": 0}).to_list(300)
+    if not hasil:
+        ordered_ids = [s["id"] for s in soal_docs]
+        if ujian.get("acak_soal"):
+            random.shuffle(ordered_ids)
+        hasil = {
+            "id": str(uuid.uuid4()), "kartu_id": session["id"], "kegiatan_id": session["kegiatan_id"], "ujian_id": ujian_id,
+            "student_name": session["student_name"], "urutan_soal": ordered_ids,
+            "jawaban": {}, "mulai_at": datetime.now(timezone.utc).isoformat(),
+            "selesai_at": None, "nilai": None, "pelanggaran": 0, "log_pelanggaran": [],
+        }
+        await db.cbt_hasil.insert_one({**hasil})
+    if hasil.get("selesai_at"):
+        raise HTTPException(status_code=400, detail="Anda sudah menyelesaikan ujian mapel ini")
+    soal_map = {s["id"]: s for s in soal_docs}
+    soal_list = []
+    for sid in hasil["urutan_soal"]:
+        s = soal_map.get(sid)
+        if not s:
+            continue
+        pilihan = list(enumerate(s["pilihan"]))
+        if ujian.get("acak_pilihan"):
+            random.shuffle(pilihan)
+        soal_list.append({"id": s["id"], "pertanyaan": s["pertanyaan"], "gambar": s.get("gambar", ""), "pilihan": [{"index": i, "teks": t} for i, t in pilihan]})
+    durasi_menit = (kegiatan or {}).get("durasi_menit", 60)
+    elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(hasil["mulai_at"])).total_seconds()
+    sisa_detik = max(0, durasi_menit * 60 - int(elapsed))
+    if kegiatan and kegiatan.get("selesai"):
+        sisa_jadwal = (datetime.fromisoformat(kegiatan["selesai"]) - datetime.now(timezone.utc)).total_seconds()
+        sisa_detik = max(0, min(sisa_detik, int(sisa_jadwal)))
+    return {"judul": f"{ujian['mapel']} - {(kegiatan or {}).get('nama', '')}", "mapel": ujian["mapel"], "soal": soal_list, "jawaban_tersimpan": hasil["jawaban"], "sisa_detik": sisa_detik}
+
+
+@api_router.post("/cbt/jawab")
+async def cbt_jawab(payload: CBTJawabInput, session: dict = Depends(get_cbt_session)):
+    result = await db.cbt_hasil.update_one({"kartu_id": session["id"], "ujian_id": payload.ujian_id, "selesai_at": None}, {"$set": {f"jawaban.{payload.soal_id}": payload.jawaban}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=400, detail="Sesi ujian tidak aktif")
+    return {"message": "Jawaban tersimpan"}
+
+
+@api_router.post("/cbt/selesai")
+async def cbt_selesai(ujian_id: str, session: dict = Depends(get_cbt_session)):
+    hasil = await db.cbt_hasil.find_one({"kartu_id": session["id"], "ujian_id": ujian_id})
+    if not hasil:
+        raise HTTPException(status_code=400, detail="Sesi ujian tidak ditemukan")
+    if hasil.get("selesai_at"):
+        return {"message": "Ujian mapel ini sudah diselesaikan sebelumnya", "nilai": hasil["nilai"]}
+    ujian = await db.cbt_ujian.find_one({"id": ujian_id}, {"_id": 0})
+    soal_docs = await db.cbt_soal.find({"paket_id": ujian["paket_id"]}, {"_id": 0}).to_list(300)
+    soal_map = {s["id"]: s for s in soal_docs}
+    total_poin = sum(s.get("poin", 1) for s in soal_docs) or 1
+    dapat_poin = 0
+    for sid, jawaban in hasil["jawaban"].items():
+        s = soal_map.get(sid)
+        if s and jawaban == s["jawaban_benar"]:
+            dapat_poin += s.get("poin", 1)
+    nilai = round(dapat_poin / total_poin * 100, 1)
+    await db.cbt_hasil.update_one({"id": hasil["id"]}, {"$set": {"selesai_at": datetime.now(timezone.utc).isoformat(), "nilai": nilai}})
+    sisa_ujian = await db.cbt_ujian.count_documents({"kegiatan_id": session["kegiatan_id"]})
+    sudah_selesai = await db.cbt_hasil.count_documents({"kartu_id": session["id"], "selesai_at": {"$ne": None}})
+    if sudah_selesai >= sisa_ujian:
+        await db.cbt_kartu.update_one({"id": session["id"]}, {"$set": {"status": "selesai"}})
+    return {"message": "Ujian mapel ini selesai", "nilai": nilai}
+
+
+@api_router.post("/cbt/event")
+async def cbt_event(payload: CBTEventInput, session: dict = Depends(get_cbt_session)):
+    await db.cbt_hasil.update_one(
+        {"kartu_id": session["id"], "selesai_at": None},
+        {"$inc": {"pelanggaran": 1}, "$push": {"log_pelanggaran": {"tipe": payload.tipe, "waktu": datetime.now(timezone.utc).isoformat()}}},
+        sort=[("mulai_at", -1)],
+    )
+    return {"message": "Pelanggaran dicatat"}
 
 
 app.include_router(api_router)

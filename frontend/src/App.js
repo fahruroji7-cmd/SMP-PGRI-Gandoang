@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import "@/App.css";
 import axios from "axios";
 import html2canvas from "html2canvas";
@@ -8,7 +8,7 @@ import {
   LogOut, Menu, Pencil, Plus, Printer, Save, School, Search, Settings,
   ShieldCheck, Sparkles, Trash2, Users, X, BookMarked, Trophy, Camera, Award, Star, UserCog,
   ClipboardCheck, DoorOpen, AlertOctagon, UserCheck, ListChecks, IdCard, ImagePlus, Sun, Moon,
-  UserRound, ClipboardList, Thermometer, Mail, Send, RefreshCw, Upload, Wand2, Contact
+  UserRound, ClipboardList, Thermometer, Mail, Send, RefreshCw, Upload, Wand2, Contact, Wallet
 } from "lucide-react";
 
 const NAV = [
@@ -18,6 +18,8 @@ const NAV = [
   { id: "nilai", label: "Nilai Siswa", icon: GraduationCap },
   { id: "jurnal", label: "Jurnal Mengajar", icon: BookMarked },
   { id: "rekap", label: "Rekap & Cetak", icon: Printer },
+  { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
+  { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
 ];
 const ADMIN_NAV_GROUPS = [
   { label: "Data Master", icon: School, items: [
@@ -40,11 +42,22 @@ const ADMIN_NAV_GROUPS = [
   ] },
   { label: "Wali Kelas", icon: UserRound, items: [
     { id: "wali-kelas-admin", label: "Wali Kelas", icon: UserRound },
-    { id: "akun-sekretaris", label: "Akun Sekretaris Kelas", icon: ClipboardList },
+    { id: "jabatan-kelas", label: "Jabatan Kelas", icon: UserRound },
     { id: "rekap-absen-harian", label: "Rekap Absen Kelas", icon: BarChart3 },
   ] },
   { label: "Tata Usaha", icon: Contact, items: [
     { id: "akun-tu", label: "Akun Tata Usaha", icon: Contact },
+  ] },
+  { label: "CBT", icon: ClipboardCheck, items: [
+    { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
+    { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
+    { id: "kartu-ujian", label: "Kartu Ujian", icon: IdCard },
+    { id: "monitor-cbt", label: "Pengawasan Ujian", icon: ShieldCheck },
+    { id: "hasil-angkatan", label: "Hasil per Angkatan", icon: BarChart3 },
+    { id: "akun-cbt", label: "Akun Panitia CBT", icon: Contact },
+  ] },
+  { label: "Kepala Sekolah", icon: School, items: [
+    { id: "akun-kepsek", label: "Akun Kepala Sekolah", icon: UserCog },
   ] },
   { label: "Sistem", icon: Settings, items: [
     { id: "pengaturan", label: "Pengaturan", icon: Settings },
@@ -53,7 +66,7 @@ const ADMIN_NAV_GROUPS = [
 const ADMIN_NAV = ADMIN_NAV_GROUPS.flatMap((g) => g.items);
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 axios.defaults.withCredentials = true;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD waktu lokal, aman untuk WIB jam 00-07
 const initials = (name) => name.split(" ").map((x) => x[0]).join("").slice(0, 2);
 const errMsg = (err, fallback) => err?.response?.data?.detail || fallback;
 async function downloadElementAsPng(elementId, filename) {
@@ -85,6 +98,262 @@ function compressImage(file, maxWidth, maxHeight, quality) {
     reader.onerror = () => reject(new Error("Gagal membaca file"));
     reader.readAsDataURL(file);
   });
+}
+
+function CBTPortal() {
+  const [stage, setStage] = useState("login"); // login | daftar | siap | ujian | selesai-mapel | semua-selesai
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [token, setToken] = useState(() => sessionStorage.getItem("cbt_token") || "");
+  const [studentName, setStudentName] = useState("");
+  const [kegiatanInfo, setKegiatanInfo] = useState(null);
+  const [daftarUjian, setDaftarUjian] = useState([]);
+  const [ujianAktif, setUjianAktif] = useState(null);
+  const [soalList, setSoalList] = useState([]);
+  const [jawaban, setJawaban] = useState({});
+  const [idx, setIdx] = useState(0);
+  const [sisaDetik, setSisaDetik] = useState(0);
+  const [deadline, setDeadline] = useState(0); // timestamp absolut akhir ujian
+  const [violations, setViolations] = useState(0);
+  const [warning, setWarning] = useState("");
+  const [nilaiSelesai, setNilaiSelesai] = useState(null);
+  const examRef = useRef(null);
+  const submittedRef = useRef(false);
+  const lastViolationRef = useRef(0);
+
+  const cbtApi = useMemo(() => {
+    const instance = axios.create({ baseURL: API });
+    instance.interceptors.request.use((cfg) => { if (token) cfg.headers.Authorization = `Bearer ${token}`; return cfg; });
+    return instance;
+  }, [token]);
+
+  const muatDaftarUjian = async () => {
+    try { const { data } = await cbtApi.get("/cbt/daftar-ujian"); setDaftarUjian(data); setStage("daftar"); }
+    catch (err) { setError(err?.response?.data?.detail || "Gagal memuat daftar ujian"); }
+  };
+
+  // Pulihkan sesi otomatis jika token masih ada (misal: siswa refresh halaman di tengah ujian)
+  useEffect(() => {
+    const savedToken = sessionStorage.getItem("cbt_token");
+    if (savedToken && stage === "login") {
+      muatDaftarUjian();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const login = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const { data } = await cbtApi.post("/cbt/login", { username, password });
+      sessionStorage.setItem("cbt_token", data.access_token);
+      setToken(data.access_token);
+      setStudentName(data.student_name);
+      setKegiatanInfo(data.kegiatan);
+      const daftar = await axios.get(`${API}/cbt/daftar-ujian`, { headers: { Authorization: `Bearer ${data.access_token}` } });
+      setDaftarUjian(daftar.data);
+      setStage("daftar");
+    } catch (err) { setError(err?.response?.data?.detail || "Username atau password salah"); }
+    finally { setLoading(false); }
+  };
+
+  const pilihMapel = (u) => { if (u.selesai) return; setUjianAktif(u); setStage("siap"); setError(""); };
+
+  const mulaiUjian = async () => {
+    setLoading(true); setError("");
+    submittedRef.current = false;
+    try {
+      const { data } = await cbtApi.get("/cbt/soal-ujian", { params: { ujian_id: ujianAktif.id } });
+      setSoalList(data.soal);
+      setJawaban(data.jawaban_tersimpan || {});
+      setSisaDetik(data.sisa_detik);
+      setDeadline(Date.now() + data.sisa_detik * 1000); // simpan batas waktu absolut
+      setIdx(0);
+      setStage("ujian");
+      if (examRef.current?.requestFullscreen) examRef.current.requestFullscreen().catch(() => {});
+    } catch (err) { setError(err?.response?.data?.detail || "Gagal memuat soal ujian"); }
+    finally { setLoading(false); }
+  };
+
+  const playAlarm = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square"; osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.35, ctx.currentTime);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.7);
+    } catch { /* abaikan kalau browser blokir audio */ }
+  };
+  const logEvent = (tipe) => { cbtApi.post("/cbt/event", { tipe }).catch(() => {}); };
+  const catat = (tipe, pesan) => {
+    const now = Date.now();
+    if (now - lastViolationRef.current < 1500) return; // debounce: abaikan event ganda dalam 1.5 detik
+    lastViolationRef.current = now;
+    playAlarm();
+    setViolations((v) => v + 1);
+    if (pesan) setWarning(pesan);
+    logEvent(tipe);
+  };
+
+  useEffect(() => {
+    if (stage !== "ujian") return;
+    const onVis = () => { if (document.hidden) catat("tab_switch", "Anda terdeteksi berpindah tab/aplikasi lain. Pelanggaran dicatat."); };
+    const onBlur = () => catat("blur", "");
+    const onFsChange = () => { if (!document.fullscreenElement) catat("fullscreen_exit", "Anda keluar dari mode layar penuh. Pelanggaran dicatat."); };
+    const onContext = (e) => e.preventDefault();
+    const onCopy = (e) => { e.preventDefault(); logEvent("copy_paste"); };
+    const onBeforeUnload = (e) => { if (!submittedRef.current) { e.preventDefault(); e.returnValue = ""; } };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("contextmenu", onContext);
+    document.addEventListener("copy", onCopy);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("contextmenu", onContext);
+      document.removeEventListener("copy", onCopy);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (stage !== "ujian" || !deadline) return;
+    const tick = () => {
+      const sisa = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      setSisaDetik(sisa);
+      if (sisa <= 0) selesaiUjian();
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [stage, deadline]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pilihJawaban = (soalId, index) => {
+    setJawaban((prev) => ({ ...prev, [soalId]: index }));
+    cbtApi.post("/cbt/jawab", { ujian_id: ujianAktif.id, soal_id: soalId, jawaban: index }).catch(() => {});
+  };
+
+  const selesaiUjian = async () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    try {
+      const { data } = await cbtApi.post("/cbt/selesai", {}, { params: { ujian_id: ujianAktif.id } });
+      setNilaiSelesai(data.nilai);
+    } catch { setNilaiSelesai(null); }
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setStage("selesai-mapel");
+  };
+
+  const kembaliKeDaftar = async () => {
+    setUjianAktif(null); setSoalList([]); setJawaban({});
+    try { const { data } = await cbtApi.get("/cbt/daftar-ujian"); setDaftarUjian(data);
+      if (data.every((u) => u.selesai)) { sessionStorage.removeItem("cbt_token"); setStage("semua-selesai"); }
+      else setStage("daftar");
+    } catch { setStage("daftar"); }
+  };
+
+  const fmtTime = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  const terjawab = Object.keys(jawaban).length;
+
+  return <div className="cbt-shell" ref={examRef}>
+    <div className="cbt-bg" />
+    {stage === "login" && <div className="cbt-center">
+      <form className="cbt-login-card" onSubmit={login}>
+        <div className="cbt-logo-dot">CBT</div>
+        <h1>Ujian Berbasis Komputer</h1>
+        <p>Masuk menggunakan kartu ujian yang diberikan oleh Tata Usaha.</p>
+        <label>Username<input data-testid="cbt-username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus /></label>
+        <label>Password<input data-testid="cbt-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {error && <div className="cbt-error">{error}</div>}
+        <button type="submit" className="cbt-primary-btn" disabled={loading}>{loading ? "Memeriksa..." : "Masuk Ujian"}</button>
+      </form>
+    </div>}
+
+    {stage === "daftar" && <div className="cbt-center">
+      <div className="cbt-login-card" style={{ maxWidth: 480 }}>
+        <div className="cbt-logo-dot">{studentName ? studentName[0] : "S"}</div>
+        <h1>{kegiatanInfo?.nama}</h1>
+        <p>Halo {studentName}, pilih mata pelajaran yang mau dikerjakan.</p>
+        <div className="cbt-mapel-list">
+          {daftarUjian.map((u) => <button key={u.id} className={`cbt-mapel-item ${u.selesai ? "done" : ""}`} disabled={u.selesai} onClick={() => pilihMapel(u)}>
+            <span>{u.mapel}</span>
+            {u.selesai ? <span className="cbt-mapel-badge done">Selesai ({u.nilai})</span> : <span className="cbt-mapel-badge">Belum dikerjakan</span>}
+          </button>)}
+          {!daftarUjian.length && <p className="cbt-muted-note">Belum ada mapel yang tersedia.</p>}
+        </div>
+      </div>
+    </div>}
+
+    {stage === "siap" && <div className="cbt-center">
+      <div className="cbt-login-card">
+        <div className="cbt-logo-dot">✓</div>
+        <h1>{ujianAktif?.mapel}</h1>
+        <p>{kegiatanInfo?.nama} · {kegiatanInfo?.durasi_menit} menit · Peserta: {studentName}</p>
+        <ul className="cbt-rules">
+          <li>Ujian akan berjalan dalam mode layar penuh.</li>
+          <li>Jangan berpindah tab, aplikasi lain, atau keluar dari layar penuh — akan tercatat sebagai pelanggaran dan berbunyi.</li>
+          <li>Klik kanan dan copy-paste dinonaktifkan selama ujian.</li>
+          <li>Waktu berjalan otomatis dan ujian akan terkirim sendiri saat waktu habis.</li>
+        </ul>
+        {error && <div className="cbt-error">{error}</div>}
+        <button className="cbt-primary-btn" onClick={mulaiUjian} disabled={loading}>{loading ? "Menyiapkan..." : "Mulai Mengerjakan"}</button>
+        <button className="cbt-text-btn" onClick={() => setStage("daftar")}>&larr; Kembali ke daftar mapel</button>
+      </div>
+    </div>}
+
+    {stage === "ujian" && soalList.length > 0 && <div className="cbt-exam-layout">
+      <header className="cbt-exam-header">
+        <div className="cbt-exam-title">{ujianAktif?.mapel} &mdash; {kegiatanInfo?.nama}</div>
+        <div className={`cbt-timer ${sisaDetik < 300 ? "danger" : ""}`}>{fmtTime(sisaDetik)}</div>
+      </header>
+      {warning && <div className="cbt-warning-banner" onAnimationEnd={() => setWarning("")}>{warning} (Total pelanggaran: {violations})</div>}
+      <div className="cbt-exam-body">
+        <aside className="cbt-nav-panel">
+          <div className="cbt-nav-title">Navigasi Soal</div>
+          <div className="cbt-nav-grid">{soalList.map((s, i) => <button key={s.id} className={`cbt-nav-btn ${i === idx ? "active" : ""} ${jawaban[s.id] !== undefined ? "answered" : ""}`} onClick={() => setIdx(i)}>{i + 1}</button>)}</div>
+          <div className="cbt-nav-progress">{terjawab} / {soalList.length} terjawab</div>
+          <button className="cbt-primary-btn danger" onClick={() => { if (window.confirm("Yakin sudah selesai mapel ini? Jawaban tidak bisa diubah lagi setelah ini.")) selesaiUjian(); }}>Selesai Mapel Ini</button>
+        </aside>
+        <main className="cbt-question-panel">
+          <div className="cbt-question-count">Soal {idx + 1} dari {soalList.length}</div>
+          <div className="cbt-question-text">{soalList[idx].pertanyaan}</div>
+          {soalList[idx].gambar && <div className="cbt-question-image"><img src={soalList[idx].gambar} alt="Ilustrasi soal" /></div>}
+          <div className="cbt-options">
+            {soalList[idx].pilihan.map((p) => <button key={p.index} className={`cbt-option ${jawaban[soalList[idx].id] === p.index ? "selected" : ""}`} onClick={() => pilihJawaban(soalList[idx].id, p.index)}>{p.teks}</button>)}
+          </div>
+          <div className="cbt-question-footer">
+            <button className="cbt-nav-arrow" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>&larr; Sebelumnya</button>
+            <button className="cbt-nav-arrow" disabled={idx === soalList.length - 1} onClick={() => setIdx((i) => i + 1)}>Berikutnya &rarr;</button>
+          </div>
+        </main>
+      </div>
+    </div>}
+
+    {stage === "selesai-mapel" && <div className="cbt-center">
+      <div className="cbt-login-card">
+        <div className="cbt-logo-dot">✓</div>
+        <h1>{ujianAktif?.mapel} Selesai</h1>
+        <p>Jawaban kamu untuk mapel ini sudah tersimpan.</p>
+        {nilaiSelesai !== null && <div className="cbt-score">{nilaiSelesai}</div>}
+        <button className="cbt-primary-btn" onClick={kembaliKeDaftar}>Lanjut Mapel Lain</button>
+      </div>
+    </div>}
+
+    {stage === "semua-selesai" && <div className="cbt-center">
+      <div className="cbt-login-card">
+        <div className="cbt-logo-dot">✓</div>
+        <h1>Semua Ujian Selesai</h1>
+        <p>Terima kasih, {studentName}. Semua mata pelajaran sudah kamu kerjakan.</p>
+        <p className="cbt-muted-note">Kamu boleh menutup halaman ini sekarang.</p>
+      </div>
+    </div>}
+  </div>;
 }
 
 function App() {
@@ -130,15 +399,19 @@ function App() {
       const params = new URLSearchParams({ kind, ...filters });
       const response = await axios.get(`${API}/reports/export?${params.toString()}`, { responseType: "blob" });
       const url = URL.createObjectURL(response.data);
-      const link = document.createElement("a"); link.href = url; link.download = `absenspg-${kind}.xlsx`; link.click(); URL.revokeObjectURL(url);
+      const link = document.createElement("a"); link.href = url; link.download = `absenspg-${kind}.xlsx`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       showToast("File Excel berhasil diunduh");
     } catch { showToast("Gagal mengunduh laporan"); }
   };
   const printReport = async (kind, filters = {}) => {
-    const params = new URLSearchParams({ kind, ...filters });
-    const response = await axios.get(`${API}/reports/print?${params.toString()}`);
-    const printWindow = window.open("", "_blank");
-    if (printWindow) { printWindow.document.write(response.data); printWindow.document.close(); }
+    try {
+      const params = new URLSearchParams({ kind, ...filters });
+      const response = await axios.get(`${API}/reports/print?${params.toString()}`);
+      const printWindow = window.open("", "_blank");
+      if (printWindow) { printWindow.document.write(response.data); printWindow.document.close(); }
+      else showToast("Popup diblokir browser. Izinkan popup untuk mencetak laporan.");
+    } catch { showToast("Gagal memuat halaman cetak"); }
   };
   const addMaster = (endpoint, successMessage) => async (payload) => {
     try { await axios.post(`${API}/${endpoint}`, payload); await loadMasters(); showToast(successMessage); }
@@ -170,13 +443,20 @@ function App() {
     } catch (err) { showToast(errMsg(err, "Gagal mengimpor data")); }
   };
 
+  const handleLogout = async () => {
+    try { await axios.post(`${API}/auth/logout`, {}); } catch { /* abaikan error logout, tetap keluarkan user */ }
+    finally { setUser(null); setLoggedIn(false); }
+  };
+
   if (checkingSession) return <div className="session-loading" data-testid="session-loading">Memuat ruang kerja...</div>;
   if (!loggedIn) return <Login onLogin={(account) => { setUser(account); setLoggedIn(true); }} />;
-  if (user?.role === "Pembina") return <PembinaApp user={user} showToast={showToast} toast={toast} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} />;
-  if (user?.role?.startsWith("Piket ")) return <PiketApp user={user} showToast={showToast} toast={toast} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} />;
-  if (user?.role === "Sekretaris") return <SekretarisApp user={user} showToast={showToast} toast={toast} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} />;
-  if (user?.role === "TU") return <TuApp user={user} showToast={showToast} toast={toast} masters={masters} addMaster={addMaster} updateMaster={updateMaster} deleteMaster={deleteMaster} importMaster={importMaster} onReloadMasters={loadMasters} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} />;
-  if (user?.role === "Siswa") return <SiswaApp user={user} showToast={showToast} toast={toast} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} />;
+  if (user?.role === "Pembina") return <PembinaApp user={user} showToast={showToast} toast={toast} onLogout={handleLogout} />;
+  if (user?.role?.startsWith("Piket ")) return <PiketApp user={user} showToast={showToast} toast={toast} onLogout={handleLogout} />;
+  if (user?.role === "Sekretaris") return <SekretarisApp user={user} showToast={showToast} toast={toast} onLogout={handleLogout} />;
+  if (user?.role === "TU") return <TuApp user={user} showToast={showToast} toast={toast} masters={masters} addMaster={addMaster} updateMaster={updateMaster} deleteMaster={deleteMaster} importMaster={importMaster} onReloadMasters={loadMasters} onLogout={handleLogout} />;
+  if (user?.role === "CBT") return <CBTAdminApp user={user} showToast={showToast} toast={toast} masters={masters} onLogout={handleLogout} />;
+  if (user?.role === "Kepsek") return <KepsekApp user={user} showToast={showToast} toast={toast} onLogout={handleLogout} />;
+  if (user?.role === "Siswa") return <SiswaApp user={user} showToast={showToast} toast={toast} onLogout={handleLogout} />;
 
   const classNames = masters ? masters.classes.map((c) => c.name) : [];
   const subjectNames = masters ? masters.subjects.map((s) => s.name) : [];
@@ -207,11 +487,11 @@ function App() {
           {isHomeroom && <NavItem item={{ id: "wali-kelas", label: "Wali Kelas", icon: UserRound }} active={active} onClick={navigate} />}
           {user?.role === "Admin" && ADMIN_NAV_GROUPS.map((group) => <Fragment key={group.label}><button type="button" className="nav-caption admin-caption admin-caption-toggle" onClick={() => toggleAdminGroup(group.label)}><span className="admin-caption-label"><group.icon size={16} />{group.label}</span><ChevronDown size={12} className={`caption-chevron ${openAdminGroups.has(group.label) ? "open" : ""}`} /></button>{openAdminGroups.has(group.label) && group.items.map((item) => <NavItem key={item.id} item={item} active={active} onClick={navigate} />)}</Fragment>)}
         </nav>
-        <div className="sidebar-bottom"><div className="backup-chip"><span className="pulse-dot" /> Backup otomatis aktif <ChevronDown size={14} /></div><button className="logout-button" data-testid="logout-button" onClick={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }}><LogOut size={16} /> Keluar</button></div>
+        <div className="sidebar-bottom"><div className="backup-chip"><span className="pulse-dot" /> Backup otomatis aktif <ChevronDown size={14} /></div></div>
       </aside>
       {mobileOpen && <button className="mobile-scrim" data-testid="mobile-menu-close" onClick={() => setMobileOpen(false)} aria-label="Tutup menu" />}
       <main className="main-content">
-        <header className="topbar"><button className="icon-button mobile-menu-button" data-testid="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>{settings?.school || "SMP PGRI Gandoang"}</span><ArrowRight size={14} /><strong>{NAV.concat(ADMIN_NAV).find((n) => n.id === active)?.label || "Dashboard"}</strong></div><div className="top-actions"><GlobalSearch navItems={searchableNav} students={masters?.students} teachers={masters?.teachers} canSearchData={user?.role === "Admin"} onNavigate={navigate} /><div className="date-badge" data-testid="today-date"><CalendarDays size={15} /> {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div><div className="mini-avatar">{user?.name ? initials(user.name) : "AF"}</div></div></header>
+        <header className="topbar"><button className="icon-button mobile-menu-button" data-testid="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>{settings?.school || "SMP PGRI Gandoang"}</span><ArrowRight size={14} /><strong>{NAV.concat(ADMIN_NAV).find((n) => n.id === active)?.label || "Dashboard"}</strong></div><div className="top-actions"><GlobalSearch navItems={searchableNav} students={masters?.students} teachers={masters?.teachers} canSearchData={user?.role === "Admin"} onNavigate={navigate} /><div className="date-badge" data-testid="today-date"><CalendarDays size={15} /> {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div><AccountMenu user={user} onLogout={async () => { await axios.post(`${API}/auth/logout`, {}); setUser(null); setLoggedIn(false); }} /></div></header>
         <div className="page-wrap">
           {active === "dashboard" && (user?.role === "Admin" ? <AdminDashboard navigate={navigate} user={user} /> : <Dashboard navigate={navigate} user={user} stats={stats} onMarkAttendance={goToAttendance} />)}
           {active === "absensi" && (ready ? <Attendance classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} prefill={attendancePrefill} onConsumePrefill={() => setAttendancePrefill(null)} /> : loadingPanel)}
@@ -219,7 +499,7 @@ function App() {
           {active === "jadwal" && (scheduleReady ? <Schedule classes={classNames} subjects={subjectNames} showToast={showToast} onSaved={loadMySchedules} /> : loadingPanel)}
           {active === "jurnal" && (ready ? <Journal classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} showToast={showToast} /> : loadingPanel)}
           {active === "rekap" && <Reports onExport={downloadReport} onPrint={printReport} classes={myClassNames} subjects={subjectNames} subjectsByClass={subjectsByClass} />}
-          {active === "wali-kelas" && <WaliKelasPage showToast={showToast} homeroomClass={masters?.teachers?.find((t) => t.name === user.name)?.homeroom_class} />}
+          {active === "wali-kelas" && <WaliKelasPage showToast={showToast} homeroomClass={masters?.teachers?.find((t) => t.id === user.id || t.name === user.name)?.homeroom_class} />}
           {active === "ekskul" && <EkskulAdmin showToast={showToast} />}
           {active === "ekskul-rekap" && <EkskulRekap showToast={showToast} />}
           {active === "guru" && masters && <Master title="Kelola Guru" icon={Users} rows={masters.teachers} addLabel="Tambah guru" onAdd={addMaster("teachers", "Data guru diperbarui")} onUpdate={updateMaster("teachers", "Data guru diperbarui")} onDelete={deleteMaster("teachers", "Data guru dihapus")} accountActions onCreateAccount={createTeacherAccount} onResetPassword={resetTeacherPassword} onImport={importMaster("teachers", "Guru")} />}
@@ -230,9 +510,16 @@ function App() {
           {active === "rekap-piket" && <PiketRekap showToast={showToast} />}
           {active === "laporan-guru" && <LaporanPage showToast={showToast} />}
           {active === "wali-kelas-admin" && masters && <WaliKelasAdmin showToast={showToast} teachers={masters.teachers} classes={classNames} onReload={loadMasters} />}
-          {active === "akun-sekretaris" && <SekretarisAccountsAdmin showToast={showToast} classes={classNames} />}
+          {active === "jabatan-kelas" && masters && <JabatanKelasAdmin showToast={showToast} classes={classNames} />}
           {active === "rekap-absen-harian" && <DailyAttendanceRekap showToast={showToast} classes={classNames} />}
           {active === "akun-tu" && <TuAccountsAdmin showToast={showToast} />}
+          {active === "akun-kepsek" && <KepsekAccountsAdmin showToast={showToast} />}
+          {active === "bank-soal" && <BankSoalPage showToast={showToast} subjects={subjectNames} />}
+          {active === "ujian-cbt" && <UjianKegiatanPage showToast={showToast} classes={classNames} subjects={subjectNames} />}
+          {active === "kartu-ujian" && <KartuUjianPage showToast={showToast} />}
+          {active === "monitor-cbt" && <CBTMonitorPage showToast={showToast} />}
+          {active === "hasil-angkatan" && <CBTHasilAngkatanPage showToast={showToast} />}
+          {active === "akun-cbt" && <CBTAccountsAdmin showToast={showToast} />}
           {active === "siswa" && masters && <Master title="Kelola Siswa" icon={Users} rows={masters.students} addLabel="Tambah siswa" onAdd={addMaster("students", "Data siswa diperbarui")} onUpdate={updateMaster("students", "Data siswa diperbarui")} onDelete={deleteMaster("students", "Data siswa dihapus")} classes={classNames} onImport={importMaster("students", "Siswa")} />}
           {active === "mapel" && masters && <Master title="Kelola Mata Pelajaran" icon={BookOpen} rows={masters.subjects} addLabel="Tambah mapel" onAdd={addMaster("subjects", "Mata pelajaran ditambahkan")} onUpdate={updateMaster("subjects", "Data mapel diperbarui")} onDelete={deleteMaster("subjects", "Data mapel dihapus")} />}
           {active === "pengaturan" && settings && <SettingsView settings={settings} setSettings={setSettings} showToast={showToast} />}
@@ -245,6 +532,26 @@ function App() {
 
 function Login({ onLogin }) { const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false); const submit = async (e) => { e.preventDefault(); setError(""); if (!username || !password) return setError("Username dan password wajib diisi."); setLoading(true); try { const { data } = await axios.post(`${API}/auth/login`, { username, password }); onLogin(data); } catch (err) { setError(errMsg(err, "Username atau password salah.")); } finally { setLoading(false); } }; return <div className="login-page"><div className="login-visual"><div className="login-brand mobile-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo-mobile" /><span>SMP PGRI Gandoang</span></div><div className="visual-copy"><span className="eyebrow"><Sparkles size={14} /> Sistem Informasi Sekolah</span><h1>Satu portal,<br /><em>untuk seluruh sekolah.</em></h1><p>Absensi, nilai, jadwal, piket, dan administrasi sekolah &mdash; dalam satu tempat.</p></div><div className="visual-footer">SMP PGRI Gandoang <span>•</span> Sistem Informasi Akademik</div></div><div className="login-panel"><div className="login-brand desktop-brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" data-testid="login-logo" /><span>SMP PGRI Gandoang</span></div><div className="login-content"><span className="eyebrow">Selamat datang kembali</span><h2>Masuk ke akun Anda</h2><p className="muted">Masuk dengan akun yang terdaftar di sekolah.</p><form onSubmit={submit}><label>Username<input data-testid="login-username-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Masukkan username Anda" /></label><label>Password<input data-testid="login-password-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Masukkan password" /></label>{error && <div className="form-error" data-testid="login-error">{error}</div>}<button className="primary-button login-submit" data-testid="login-submit-button" disabled={loading}>{loading ? "Memeriksa akun..." : "Masuk ke dashboard"} {!loading && <ArrowRight size={17} />}</button></form><p className="login-note">Belum punya akun? Hubungi admin sekolah Anda.</p></div></div></div>; }
 function NavItem({ item, active, onClick }) { const Icon = item.icon; return <button className={`nav-item ${active === item.id ? "active" : ""}`} data-testid={`nav-${item.id}`} onClick={() => onClick(item.id)}><Icon size={17} /><span>{item.label}</span>{active === item.id && <span className="nav-active-dot" />}</button>; }
+
+function AccountMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  useEffect(() => {
+    const onDocClick = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+  return (
+    <div className="account-menu" ref={wrapRef}>
+      <button className="mini-avatar" data-testid="account-menu-button" onClick={() => setOpen((o) => !o)} aria-label="Akun">{user?.name ? initials(user.name) : "AF"}</button>
+      {open && <div className="account-menu-panel" data-testid="account-menu-panel">
+        <div className="account-menu-name">{user?.name || "-"}</div>
+        <div className="account-menu-role">{user?.role || ""}</div>
+        <button className="account-menu-logout" data-testid="account-menu-logout" onClick={onLogout}><LogOut size={15} /> Keluar</button>
+      </div>}
+    </div>
+  );
+}
 
 function GlobalSearch({ navItems, students, teachers, canSearchData, onNavigate }) {
   const [open, setOpen] = useState(false);
@@ -403,15 +710,17 @@ function Grades({ classes, subjects, subjectsByClass, showToast }) {
       ]);
       const saved = Object.fromEntries(savedRes.data.entries.map((e) => [e.student, e.score]));
       setRoster(studentsRes.data);
-      setScores(Object.fromEntries(studentsRes.data.map((s) => [s.name, saved[s.name] ?? 80])));
+      setScores(Object.fromEntries(studentsRes.data.map((s) => [s.name, saved[s.name] ?? ""]))); // kosong jika belum dinilai
     } catch { showToast("Gagal memuat data nilai"); }
   };
   useEffect(() => { load(); }, [date, className, subject, type]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async () => {
     if (!roster.length) return showToast("Tidak ada siswa untuk disimpan");
+    const entries = roster.filter((s) => scores[s.name] !== "" && scores[s.name] != null).map((s) => ({ student: s.name, score: Math.min(100, Math.max(0, Number(scores[s.name]))) }));
+    if (!entries.length) return showToast("Belum ada nilai yang diisi");
     setSaving(true);
     try {
-      await axios.post(`${API}/grades`, { date, class_name: className, subject, assessment_type: type, entries: roster.map((s) => ({ student: s.name, score: Math.min(100, Math.max(0, Number(scores[s.name]) || 0)) })) });
+      await axios.post(`${API}/grades`, { date, class_name: className, subject, assessment_type: type, entries });
       showToast("Nilai siswa berhasil disimpan");
     } catch (err) { showToast(errMsg(err, "Gagal menyimpan nilai")); } finally { setSaving(false); }
   };
@@ -419,21 +728,23 @@ function Grades({ classes, subjects, subjectsByClass, showToast }) {
   return <><PageTitle eyebrow="Kegiatan mengajar" title="Nilai siswa" description="Kelola penilaian formatif dan sumatif dalam satu tempat." action={<button className="secondary-button" data-testid="grades-import-button"><FileDown size={16} /> Impor Excel</button>} /><div className="filter-grid panel grades-filter"><label className="field">Tanggal<input data-testid="grades-date-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label><Select label="Kelas" testid="grades-class-select" value={className} onChange={setClassName} options={classes} /><Select label="Mata pelajaran" testid="grades-subject-select" value={subject} onChange={setSubject} options={subjectOptions} /><Select label="Jenis penilaian" testid="grades-type-select" value={type} onChange={setType} options={GRADE_TYPES} /></div><section className="panel roster-panel"><PanelHeading title={`${type} · ${subject}`} subtitle={`Kelas ${className} · ${date}`} action={<span className="saved-badge"><Check size={14} /> {roster.length} siswa</span>} /><div className="table-wrap"><table><thead><tr><th>No</th><th>Nama siswa</th><th>Nilai (0—100)</th><th>Predikat</th></tr></thead><tbody>{roster.map((s, i) => { const grade = Number(scores[s.name]) || 0; return <tr key={s.id}><td>{String(i + 1).padStart(2, "0")}</td><td><div className="name-cell"><span className="student-avatar">{initials(s.name)}</span><strong>{s.name}</strong></div></td><td><input className="grade-input" data-testid={`grade-input-${i + 1}`} type="number" min="0" max="100" value={scores[s.name] ?? ""} onChange={(e) => setScores({ ...scores, [s.name]: e.target.value })} /></td><td><span className={`grade-pill ${grade >= 85 ? "excellent" : grade >= 75 ? "good" : "needs"}`}>{grade >= 85 ? "Sangat baik" : grade >= 75 ? "Baik" : "Perlu bimbingan"}</span></td></tr>; })}{!roster.length && <tr><td colSpan="4" data-testid="grades-empty-state">Tidak ada siswa pada kelas ini.</td></tr>}</tbody></table></div><div className="roster-footer"><span>Rata-rata kelas <strong>{average}</strong></span><button className="primary-button" data-testid="grades-save-button" onClick={save} disabled={saving}><Save size={16} /> {saving ? "Menyimpan..." : "Simpan nilai"}</button></div></section></>;
 }
 
-const SCHEDULE_DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+const SCHEDULE_DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat"];
 function Schedule({ classes, subjects, showToast, onSaved }) {
   const [day, setDay] = useState(SCHEDULE_DAYS[0]);
   const [schedules, setSchedules] = useState([]);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ start_time: "07:00", end_time: "08:20", class_name: classes[0], subject: subjects[0], room: "" });
+  const [form, setForm] = useState({ start_time: "07:00", end_time: "08:20", class_name: classes[0], subject: subjects[0], room: "", jam_awal: 1, jam_akhir: 2 });
   const [saving, setSaving] = useState(false);
   const load = () => axios.get(`${API}/schedules`).then(({ data }) => setSchedules(data)).catch(() => {});
   useEffect(() => { load(); }, []);
   const dayEntries = schedules.filter((item) => item.day === day).sort((a, b) => a.start_time.localeCompare(b.start_time));
   const submit = async () => {
     if (!form.start_time || !form.end_time) return showToast("Jam mulai dan selesai wajib diisi");
+    if (!form.jam_awal || !form.jam_akhir) return showToast("Jam ke- wajib diisi");
+    if (Number(form.jam_akhir) < Number(form.jam_awal)) return showToast("Jam ke- akhir tidak boleh lebih kecil dari awal");
     setSaving(true);
     try {
-      await axios.post(`${API}/schedules`, { day, ...form });
+      await axios.post(`${API}/schedules`, { day, ...form, jam_awal: Number(form.jam_awal), jam_akhir: Number(form.jam_akhir) });
       showToast("Jadwal baru ditambahkan");
       setOpen(false);
       await load();
@@ -445,7 +756,7 @@ function Schedule({ classes, subjects, showToast, onSaved }) {
     try { await axios.delete(`${API}/schedules/${id}`); showToast("Jadwal dihapus"); load(); if (onSaved) onSaved(); }
     catch { showToast("Gagal menghapus jadwal"); }
   };
-  return <><PageTitle eyebrow="Kegiatan mengajar" title="Jadwal mengajar" description="Susun ritme hari mengajar Anda dengan jelas." action={<button className="primary-button" data-testid="schedule-add-button" onClick={() => setOpen(!open)}>{open ? <X size={17} /> : <Plus size={17} />} {open ? "Tutup" : "Tambah jadwal"}</button>} /><section className="week-strip panel">{SCHEDULE_DAYS.map((d) => <button key={d} className={d === day ? "selected" : ""} data-testid={`schedule-day-${d.toLowerCase()}`} onClick={() => setDay(d)}><strong>{d}</strong></button>)}</section>{open && <section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Jam mulai<input data-testid="schedule-start-input" type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} /></label><label className="field">Jam selesai<input data-testid="schedule-end-input" type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} /></label><Select label="Kelas" testid="schedule-class-select" value={form.class_name} onChange={(v) => setForm({ ...form, class_name: v })} options={classes} /><Select label="Mata pelajaran" testid="schedule-subject-select" value={form.subject} onChange={(v) => setForm({ ...form, subject: v })} options={subjects} /><label className="field">Ruang<input data-testid="schedule-room-input" value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} placeholder="Contoh: Ruang 3" /></label><button className="primary-button filter-button" data-testid="schedule-save-button" onClick={submit} disabled={saving}><Save size={16} /> {saving ? "Menyimpan..." : "Simpan jadwal"}</button></section>}<section className="panel schedule-table"><PanelHeading title={day} subtitle={`${dayEntries.length} jadwal mengajar`} />{dayEntries.map((item) => <div className="timeline-item" key={item.id} data-testid={`schedule-entry-${item.id}`}><div className="time">{item.start_time} — {item.end_time}</div><div className="timeline-line"><span /></div><div className="lesson"><div><strong>{item.subject}</strong><span>{item.class_name} · {item.room || "-"}</span></div><button className="icon-button" data-testid={`schedule-delete-${item.id}`} aria-label="Hapus jadwal" onClick={() => remove(item.id)}><Trash2 size={16} /></button></div></div>)}{!dayEntries.length && <p className="muted" data-testid="schedule-empty-state">Belum ada jadwal untuk {day}.</p>}</section></>;
+  return <><PageTitle eyebrow="Kegiatan mengajar" title="Jadwal mengajar" description="Susun ritme hari mengajar Anda dengan jelas." action={<button className="primary-button" data-testid="schedule-add-button" onClick={() => setOpen(!open)}>{open ? <X size={17} /> : <Plus size={17} />} {open ? "Tutup" : "Tambah jadwal"}</button>} /><section className="week-strip panel">{SCHEDULE_DAYS.map((d) => <button key={d} className={d === day ? "selected" : ""} data-testid={`schedule-day-${d.toLowerCase()}`} onClick={() => setDay(d)}><strong>{d}</strong></button>)}</section>{open && <section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Jam mulai<input data-testid="schedule-start-input" type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} /></label><label className="field">Jam selesai<input data-testid="schedule-end-input" type="time" value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} /></label><label className="field">Jam ke- (dari)<input data-testid="schedule-jam-awal-input" type="number" min="1" max="20" value={form.jam_awal} onChange={(e) => setForm({ ...form, jam_awal: e.target.value })} /></label><label className="field">Jam ke- (sampai)<input data-testid="schedule-jam-akhir-input" type="number" min="1" max="20" value={form.jam_akhir} onChange={(e) => setForm({ ...form, jam_akhir: e.target.value })} /></label><Select label="Kelas" testid="schedule-class-select" value={form.class_name} onChange={(v) => setForm({ ...form, class_name: v })} options={classes} /><Select label="Mata pelajaran" testid="schedule-subject-select" value={form.subject} onChange={(v) => setForm({ ...form, subject: v })} options={subjects} /><label className="field">Ruang<input data-testid="schedule-room-input" value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} placeholder="Contoh: Ruang 3" /></label><button className="primary-button filter-button" data-testid="schedule-save-button" onClick={submit} disabled={saving}><Save size={16} /> {saving ? "Menyimpan..." : "Simpan jadwal"}</button></section>}<section className="panel schedule-table"><PanelHeading title={day} subtitle={`${dayEntries.length} jadwal mengajar`} />{dayEntries.map((item) => <div className="timeline-item" key={item.id} data-testid={`schedule-entry-${item.id}`}><div className="time">{item.start_time} — {item.end_time}</div><div className="timeline-line"><span /></div><div className="lesson"><div><strong>{item.subject}</strong><span>{item.class_name} · {item.room || "-"}{item.jam_awal ? ` · Jam ke-${item.jam_awal}${item.jam_akhir !== item.jam_awal ? `-${item.jam_akhir}` : ""}` : ""}</span></div><button className="icon-button" data-testid={`schedule-delete-${item.id}`} aria-label="Hapus jadwal" onClick={() => remove(item.id)}><Trash2 size={16} /></button></div></div>)}{!dayEntries.length && <p className="muted" data-testid="schedule-empty-state">Belum ada jadwal untuk {day}.</p>}</section></>;
 }
 
 function Journal({ classes, subjects, subjectsByClass, showToast }) {
@@ -936,9 +1247,9 @@ function MobileShell({ subtitle, roleLabel, user, navItems, active, onNavClick, 
   const [mobileOpen, setMobileOpen] = useState(false);
   const handleNav = (id) => { onNavClick(id); setMobileOpen(false); };
   return <div className="app-shell">
-    <aside className={`sidebar ${mobileOpen ? "open" : ""}`}><div className="brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" /><div><strong>SMP PGRI Gandoang</strong><span>{subtitle}</span></div></div><div className="profile"><div className="avatar">{initials(user.name)}</div><div><strong>{user.name}</strong><span>{roleLabel}</span></div><ShieldCheck size={16} className="profile-check" /></div><nav className="nav-list" aria-label="Navigasi utama"><div className="nav-caption">Workspace</div>{navItems.map((item) => <NavItem key={item.id} item={item} active={active} onClick={handleNav} />)}</nav><div className="sidebar-bottom"><button className="logout-button" onClick={onLogout}><LogOut size={16} /> Keluar</button></div></aside>
+    <aside className={`sidebar ${mobileOpen ? "open" : ""}`}><div className="brand"><img className="brand-logo" src="/logo-smp.png" alt="Logo SMP PGRI Gandoang" /><div><strong>SMP PGRI Gandoang</strong><span>{subtitle}</span></div></div><div className="profile"><div className="avatar">{initials(user.name)}</div><div><strong>{user.name}</strong><span>{roleLabel}</span></div><ShieldCheck size={16} className="profile-check" /></div><nav className="nav-list" aria-label="Navigasi utama"><div className="nav-caption">Workspace</div>{navItems.map((item) => <NavItem key={item.id} item={item} active={active} onClick={handleNav} />)}</nav></aside>
     {mobileOpen && <button className="mobile-scrim" onClick={() => setMobileOpen(false)} aria-label="Tutup menu" />}
-    <main className="main-content"><header className="topbar"><button className="icon-button mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>SMP PGRI Gandoang</span><ArrowRight size={14} /><strong>{navItems.find((n) => n.id === active)?.label || ""}</strong></div><div className="top-actions"><div className="mini-avatar">{initials(user.name)}</div></div></header><div className="page-wrap">{children}</div></main>
+    <main className="main-content"><header className="topbar"><button className="icon-button mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Buka menu"><Menu size={20} /></button><div className="crumb"><span>SMP PGRI Gandoang</span><ArrowRight size={14} /><strong>{navItems.find((n) => n.id === active)?.label || ""}</strong></div><div className="top-actions"><AccountMenu user={user} onLogout={onLogout} /></div></header><div className="page-wrap">{children}</div></main>
     {toast && <div className="toast" data-testid="success-toast"><Check size={16} /> {toast}</div>}
   </div>;
 }
@@ -1001,6 +1312,399 @@ function GuruPiketAdmin({ showToast }) {
     e.target.value = "";
   };
   return <><PageTitle eyebrow="Administrasi" title="Data Guru Piket" description="Daftar guru yang bisa ditugaskan piket, terpisah dari beban mengajar." /><section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field full">Nama guru piket<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama guru" /></label><button className="primary-button filter-button" onClick={submit}><Save size={16} /> Tambah</button><label className="secondary-button filter-button" style={{ cursor: "pointer" }}><FileDown size={16} /> Impor Excel<input type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display: "none" }} /></label></section><section className="panel schedule-table">{rows.map((g) => <div className="timeline-item" key={g.id}><div className="lesson"><div><strong>{g.name}</strong></div><button className="icon-button" onClick={() => remove(g.id)}><Trash2 size={16} /></button></div></div>)}{!rows.length && <p className="muted">Belum ada guru piket terdaftar.</p>}</section></>;
+}
+
+function BankSoalPage({ showToast, subjects }) {
+  const [paketList, setPaketList] = useState([]);
+  const [filterMapel, setFilterMapel] = useState("");
+  const [expanded, setExpanded] = useState(null);
+  const [soalDalamPaket, setSoalDalamPaket] = useState([]);
+  const [importNama, setImportNama] = useState("");
+  const [importMapel, setImportMapel] = useState(subjects?.[0] || "");
+  const [importing, setImporting] = useState(false);
+  const [newPaketNama, setNewPaketNama] = useState("");
+  const [newPaketMapel, setNewPaketMapel] = useState(subjects?.[0] || "");
+  const [addingSoalTo, setAddingSoalTo] = useState(null);
+  const emptySoalForm = { pertanyaan: "", gambar: "", pilihan: ["", "", "", ""], jawaban_benar: 0, poin: 1 };
+  const [soalForm, setSoalForm] = useState(emptySoalForm);
+  const [editingSoalId, setEditingSoalId] = useState(null);
+  const [uploadingGambar, setUploadingGambar] = useState(false);
+
+  const load = () => axios.get(`${API}/cbt/paket`, { params: filterMapel ? { mapel: filterMapel } : {} }).then(({ data }) => setPaketList(data)).catch(() => showToast("Gagal memuat paket soal"));
+  useEffect(() => { load(); }, [filterMapel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const downloadTemplate = async () => {
+    try { const res = await axios.get(`${API}/cbt/soal/template`, { responseType: "blob" }); const url = URL.createObjectURL(res.data); const a = document.createElement("a"); a.href = url; a.download = "template-bank-soal.xlsx"; a.click(); URL.revokeObjectURL(url); }
+    catch { showToast("Gagal mengunduh template"); }
+  };
+  const importExcel = async (file) => {
+    if (!file) return;
+    if (!importNama.trim() || !importMapel) return showToast("Isi nama paket & mapel dulu sebelum pilih file");
+    setImporting(true);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const { data } = await axios.post(`${API}/cbt/paket/import`, fd, { params: { nama: importNama, mapel: importMapel } });
+      showToast(`Paket "${importNama}" dibuat, ${data.inserted} soal berhasil diimpor${data.errors.length ? `, ${data.errors.length} baris dilewati` : ""}`);
+      if (data.errors.length) console.warn("Baris dilewati saat impor soal:", data.errors);
+      setImportNama(""); load();
+    } catch (err) { showToast(errMsg(err, "Gagal mengimpor file")); }
+    finally { setImporting(false); }
+  };
+
+  const createPaket = async () => {
+    if (!newPaketNama.trim() || !newPaketMapel) return showToast("Nama paket & mapel wajib diisi");
+    try { const { data } = await axios.post(`${API}/cbt/paket`, { nama: newPaketNama, mapel: newPaketMapel }); showToast("Paket soal dibuat, sekarang tambahkan soalnya"); setNewPaketNama(""); load(); openPaket(data.id); }
+    catch (err) { showToast(errMsg(err, "Gagal membuat paket")); }
+  };
+  const removePaket = async (id) => { if (!window.confirm("Hapus paket ini beserta semua soal di dalamnya?")) return; try { await axios.delete(`${API}/cbt/paket/${id}`); showToast("Paket dihapus"); if (expanded === id) setExpanded(null); load(); } catch { showToast("Gagal menghapus paket"); } };
+  const openPaket = async (id) => { setExpanded(id); setAddingSoalTo(null); try { const { data } = await axios.get(`${API}/cbt/paket/${id}/soal`); setSoalDalamPaket(data); } catch { showToast("Gagal memuat soal"); } };
+
+  const updatePilihan = (i, val) => setSoalForm((f) => { const p = [...f.pilihan]; p[i] = val; return { ...f, pilihan: p }; });
+  const addPilihan = () => soalForm.pilihan.length < 6 && setSoalForm((f) => ({ ...f, pilihan: [...f.pilihan, ""] }));
+  const removePilihan = (i) => soalForm.pilihan.length > 2 && setSoalForm((f) => ({ ...f, pilihan: f.pilihan.filter((_, idx) => idx !== i), jawaban_benar: f.jawaban_benar >= f.pilihan.length - 1 ? 0 : f.jawaban_benar }));
+  const uploadGambar = async (file) => {
+    if (!file) return;
+    setUploadingGambar(true);
+    const fd = new FormData(); fd.append("file", file);
+    try { const { data } = await axios.post(`${API}/cbt/soal/upload-gambar`, fd); setSoalForm((f) => ({ ...f, gambar: data.gambar })); showToast("Gambar terpasang"); }
+    catch (err) { showToast(errMsg(err, "Gagal mengunggah gambar")); }
+    finally { setUploadingGambar(false); }
+  };
+  const submitSoal = async (paketId) => {
+    if (!soalForm.pertanyaan.trim() || soalForm.pilihan.some((p) => !p.trim())) return showToast("Pertanyaan dan semua pilihan wajib diisi");
+    try {
+      if (editingSoalId) { await axios.put(`${API}/cbt/soal/${editingSoalId}`, { ...soalForm, paket_id: paketId }); showToast("Soal diperbarui"); }
+      else { await axios.post(`${API}/cbt/soal`, { ...soalForm, paket_id: paketId }); showToast("Soal ditambahkan"); }
+      setSoalForm(emptySoalForm); setEditingSoalId(null); setAddingSoalTo(null); openPaket(paketId); load();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan soal")); }
+  };
+  const editSoal = (s) => { setSoalForm({ pertanyaan: s.pertanyaan, gambar: s.gambar || "", pilihan: s.pilihan, jawaban_benar: s.jawaban_benar, poin: s.poin }); setEditingSoalId(s.id); setAddingSoalTo(expanded); };
+  const removeSoal = async (id, paketId) => { if (!window.confirm("Hapus soal ini?")) return; try { await axios.delete(`${API}/cbt/soal/${id}`); showToast("Soal dihapus"); openPaket(paketId); load(); } catch { showToast("Gagal menghapus"); } };
+
+  return <>
+    <PageTitle eyebrow="CBT" title="Bank Soal" description="Soal dikelompokkan per paket (1 file = 1 paket untuk 1 mapel)." />
+    <section className="panel" style={{ marginBottom: 18 }}>
+      <PanelHeading title="Impor Paket Soal dari Excel" subtitle="Cocok untuk banyak soal sekaligus, jadi 1 paket" />
+      <div className="form-grid" style={{ marginBottom: 12 }}>
+        <label className="field">Nama Paket<input value={importNama} onChange={(e) => setImportNama(e.target.value)} placeholder="Contoh: PJOK - ASTS Ganjil" /></label>
+        <Select label="Mata Pelajaran" value={importMapel} onChange={setImportMapel} options={subjects} />
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <button className="secondary-button" onClick={downloadTemplate}><FileDown size={16} /> Unduh Template</button>
+        <label className="primary-button" style={{ cursor: "pointer" }}>
+          <Upload size={16} /> {importing ? "Mengimpor..." : "Impor File Excel"}
+          <input type="file" accept=".xlsx" style={{ display: "none" }} disabled={importing} onChange={(e) => { importExcel(e.target.files[0]); e.target.value = ""; }} />
+        </label>
+      </div>
+    </section>
+    <section className="panel" style={{ marginBottom: 18 }}>
+      <PanelHeading title="Atau Buat Paket Kosong (isi soal manual satu-satu)" />
+      <div className="filter-grid">
+        <label className="field">Nama Paket<input value={newPaketNama} onChange={(e) => setNewPaketNama(e.target.value)} placeholder="Contoh: Matematika - Bab Pecahan" /></label>
+        <Select label="Mata Pelajaran" value={newPaketMapel} onChange={setNewPaketMapel} options={subjects} />
+        <button className="primary-button filter-button" onClick={createPaket}><Plus size={16} /> Buat Paket</button>
+      </div>
+    </section>
+    <section className="panel">
+      <PanelHeading title={`Daftar Paket Soal (${paketList.length})`} />
+      <label className="field" style={{ maxWidth: 220, marginBottom: 12 }}>Filter mapel<input value={filterMapel} onChange={(e) => setFilterMapel(e.target.value)} placeholder="Ketik nama mapel..." /></label>
+      {!paketList.length && <p className="muted">Belum ada paket soal.</p>}
+      {paketList.map((p) => <div key={p.id} className="panel" style={{ marginBottom: 12, background: "#fbfcfa" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => expanded === p.id ? setExpanded(null) : openPaket(p.id)}>
+          <div><strong>{p.nama}</strong><div className="muted" style={{ fontSize: 12 }}>{p.mapel} · {p.jumlah_soal} soal</div></div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="chip-button green">{p.jumlah_soal} soal</span>
+            <button className="icon-button" aria-label="Hapus paket" onClick={(e) => { e.stopPropagation(); removePaket(p.id); }}><Trash2 size={15} /></button>
+            <ChevronDown size={16} style={{ transform: expanded === p.id ? "rotate(180deg)" : "none" }} />
+          </div>
+        </div>
+        {expanded === p.id && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+          {soalDalamPaket.map((s, i) => <div key={s.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", gap: 10 }}>
+            <span>{i + 1}. {s.pertanyaan}{s.gambar && <ImagePlus size={13} style={{ marginLeft: 6, verticalAlign: "middle" }} color="#8a9690" />}</span>
+            <span style={{ display: "flex", gap: 6, flexShrink: 0 }}><button className="icon-button" aria-label="Edit" onClick={() => editSoal(s)}><Pencil size={14} /></button><button className="icon-button" aria-label="Hapus" onClick={() => removeSoal(s.id, p.id)}><Trash2 size={14} /></button></span>
+          </div>)}
+          {!soalDalamPaket.length && <p className="muted">Belum ada soal di paket ini.</p>}
+          {addingSoalTo === p.id ? <div style={{ marginTop: 14 }}>
+            <div className="form-grid">
+              <label className="field full">Pertanyaan<textarea rows={2} value={soalForm.pertanyaan} onChange={(e) => setSoalForm({ ...soalForm, pertanyaan: e.target.value })} /></label>
+              <label className="field">Poin<input type="number" min="1" value={soalForm.poin} onChange={(e) => setSoalForm({ ...soalForm, poin: Number(e.target.value) })} /></label>
+            </div>
+            <div style={{ margin: "10px 0" }}>
+              {soalForm.gambar && <img src={soalForm.gambar} alt="Pratinjau" style={{ maxWidth: 200, maxHeight: 130, borderRadius: 8, display: "block", marginBottom: 6 }} />}
+              <label className="secondary-button" style={{ cursor: "pointer" }}><ImagePlus size={15} /> {uploadingGambar ? "Mengunggah..." : "Pilih Gambar (opsional)"}<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadGambar(e.target.files[0])} /></label>
+            </div>
+            {soalForm.pilihan.map((pl, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <input type="radio" checked={soalForm.jawaban_benar === i} onChange={() => setSoalForm({ ...soalForm, jawaban_benar: i })} />
+              <input style={{ flex: 1 }} value={pl} onChange={(e) => updatePilihan(i, e.target.value)} placeholder={`Pilihan ${String.fromCharCode(65 + i)}`} />
+              {soalForm.pilihan.length > 2 && <button className="icon-button" aria-label="Hapus" onClick={() => removePilihan(i)}><Trash2 size={14} /></button>}
+            </div>)}
+            {soalForm.pilihan.length < 6 && <button className="text-button" onClick={addPilihan}><Plus size={13} /> Tambah pilihan</button>}
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button className="primary-button" onClick={() => submitSoal(p.id)}><Save size={15} /> Simpan</button>
+              <button className="secondary-button" onClick={() => { setAddingSoalTo(null); setSoalForm(emptySoalForm); setEditingSoalId(null); }}>Batal</button>
+            </div>
+          </div> : <button className="text-button" style={{ marginTop: 10 }} onClick={() => { setAddingSoalTo(p.id); setSoalForm(emptySoalForm); setEditingSoalId(null); }}><Plus size={14} /> Tambah soal ke paket ini</button>}
+        </div>}
+      </div>)}
+    </section>
+  </>;
+}
+
+function UjianKegiatanPage({ showToast, classes, subjects }) {
+  const emptyForm = { nama: "", tipe: "", class_name: classes?.[0] || "", mapel_list: [], durasi_menit: 60 };
+  const [kegiatanList, setKegiatanList] = useState([]);
+  const [form, setForm] = useState(emptyForm);
+  const [expanded, setExpanded] = useState(null);
+  const [ujianDalamKegiatan, setUjianDalamKegiatan] = useState([]);
+  const [paketOptions, setPaketOptions] = useState({});
+  const [submitForm, setSubmitForm] = useState({ mapel: "", paket_id: "", acak_soal: true, acak_pilihan: true });
+  const [jadwalForm, setJadwalForm] = useState({ mulaiLocal: "", selesaiLocal: "" });
+  const [viewingHasil, setViewingHasil] = useState(null);
+  const [hasilList, setHasilList] = useState([]);
+
+  const load = () => axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat kegiatan ujian"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleMapel = (m) => setForm((f) => ({ ...f, mapel_list: f.mapel_list.includes(m) ? f.mapel_list.filter((x) => x !== m) : [...f.mapel_list, m] }));
+  const submitKegiatan = async () => {
+    if (!form.nama.trim() || !form.mapel_list.length) return showToast("Nama kegiatan dan minimal 1 mapel wajib diisi");
+    try { await axios.post(`${API}/cbt/kegiatan`, form); showToast("Kegiatan ujian dibuat"); setForm(emptyForm); load(); }
+    catch (err) { showToast(errMsg(err, "Gagal membuat kegiatan")); }
+  };
+  const removeKegiatan = async (id) => { if (!window.confirm("Hapus kegiatan ini beserta semua ujian, kartu & hasilnya?")) return; try { await axios.delete(`${API}/cbt/kegiatan/${id}`); showToast("Kegiatan dihapus"); if (expanded === id) setExpanded(null); load(); } catch { showToast("Gagal menghapus"); } };
+
+  const openKegiatan = async (k) => {
+    if (expanded === k.id) { setExpanded(null); return; }
+    setExpanded(k.id);
+    setJadwalForm({ mulaiLocal: "", selesaiLocal: "" });
+    try { const { data } = await axios.get(`${API}/cbt/kegiatan/${k.id}/ujian`); setUjianDalamKegiatan(data); } catch { showToast("Gagal memuat data kegiatan"); }
+  };
+  const loadPaketUntukMapel = async (mapel) => {
+    if (paketOptions[mapel]) return;
+    try { const { data } = await axios.get(`${API}/cbt/paket`, { params: { mapel } }); setPaketOptions((prev) => ({ ...prev, [mapel]: data })); } catch { /* noop */ }
+  };
+  const submitPaketMapel = async (kegiatanId) => {
+    if (!submitForm.mapel || !submitForm.paket_id) return showToast("Pilih mapel dan paket soal dulu");
+    try {
+      await axios.post(`${API}/cbt/kegiatan/${kegiatanId}/ujian`, submitForm);
+      showToast(`Paket soal untuk ${submitForm.mapel} terpasang ke kegiatan`);
+      setSubmitForm({ mapel: "", paket_id: "", acak_soal: true, acak_pilihan: true });
+      const { data } = await axios.get(`${API}/cbt/kegiatan/${kegiatanId}/ujian`); setUjianDalamKegiatan(data);
+      load();
+    } catch (err) { showToast(errMsg(err, "Gagal memasang paket soal")); }
+  };
+  const removeUjianMapel = async (ujianId, kegiatanId) => { if (!window.confirm("Batalkan mapel ini dari kegiatan?")) return; try { await axios.delete(`${API}/cbt/ujian/${ujianId}`); showToast("Dibatalkan"); const { data } = await axios.get(`${API}/cbt/kegiatan/${kegiatanId}/ujian`); setUjianDalamKegiatan(data); load(); } catch { showToast("Gagal membatalkan"); } };
+
+  const simpanJadwal = async (kegiatanId) => {
+    if (!jadwalForm.mulaiLocal || !jadwalForm.selesaiLocal) return showToast("Isi jadwal mulai dan selesai");
+    try {
+      await axios.put(`${API}/cbt/kegiatan/${kegiatanId}/jadwal`, { mulai: new Date(jadwalForm.mulaiLocal).toISOString(), selesai: new Date(jadwalForm.selesaiLocal).toISOString() });
+      showToast("Jadwal kegiatan ujian disimpan"); load();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan jadwal")); }
+  };
+  const lihatHasil = async (u) => { setViewingHasil(u); try { const { data } = await axios.get(`${API}/cbt/ujian/${u.id}/hasil`); setHasilList(data); } catch { showToast("Gagal memuat hasil"); } };
+
+  return <>
+    <PageTitle eyebrow="CBT" title="Kegiatan Ujian" description="Cocok untuk ujian serentak lintas mapel seperti ASTS/ASAS." />
+    <section className="panel" style={{ marginBottom: 18 }}>
+      <PanelHeading title="Buat Kegiatan Ujian Baru" />
+      <div className="form-grid">
+        <label className="field">Nama Kegiatan<input value={form.nama} onChange={(e) => setForm({ ...form, nama: e.target.value })} placeholder="Contoh: ASTS Ganjil 2026/2027" /></label>
+        <label className="field">Jenis<select value={form.tipe} onChange={(e) => setForm({ ...form, tipe: e.target.value })}><option value="">- Pilih -</option><option value="Harian">Ulangan Harian</option><option value="ASTS">ASTS (Tengah Semester)</option><option value="ASAS">ASAS (Akhir Semester)</option><option value="Lainnya">Lainnya</option></select></label>
+        <Select label="Kelas" value={form.class_name} onChange={(v) => setForm({ ...form, class_name: v })} options={classes} />
+        <label className="field">Durasi per Mapel (menit)<input type="number" min="1" value={form.durasi_menit} onChange={(e) => setForm({ ...form, durasi_menit: Number(e.target.value) })} /></label>
+      </div>
+      <div className="nav-caption" style={{ padding: "10px 0 8px" }}>Mata Pelajaran yang Diujikan ({form.mapel_list.length} dipilih)</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        {subjects.map((s) => <label key={s} className={`chip-button ${form.mapel_list.includes(s) ? "green" : "amber"}`} style={{ cursor: "pointer" }}><input type="checkbox" checked={form.mapel_list.includes(s)} onChange={() => toggleMapel(s)} style={{ marginRight: 4 }} />{s}</label>)}
+      </div>
+      <button className="primary-button" onClick={submitKegiatan}><Save size={16} /> Buat Kegiatan</button>
+    </section>
+    <section className="panel">
+      <PanelHeading title="Daftar Kegiatan Ujian" />
+      {!kegiatanList.length && <p className="muted">Belum ada kegiatan ujian dibuat.</p>}
+      {kegiatanList.map((k) => <div key={k.id} className="panel" style={{ marginBottom: 12, background: "#fbfcfa" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => openKegiatan(k)}>
+          <div><strong>{k.nama}</strong><div className="muted" style={{ fontSize: 12 }}>{k.tipe || "-"} · Kelas {k.class_name} · {k.mapel_list.length} mapel</div></div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className={`chip-button ${k.siap_dijadwalkan ? "green" : "amber"}`}>{k.siap_dijadwalkan ? "Siap dijadwalkan" : `${k.mapel_terisi.length}/${k.mapel_list.length} mapel masuk`}</span>
+            {k.mulai && <span className="chip-button green">Terjadwal</span>}
+            <button className="icon-button" aria-label="Hapus" onClick={(e) => { e.stopPropagation(); removeKegiatan(k.id); }}><Trash2 size={15} /></button>
+            <ChevronDown size={16} style={{ transform: expanded === k.id ? "rotate(180deg)" : "none" }} />
+          </div>
+        </div>
+        {expanded === k.id && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+          <div className="nav-caption" style={{ padding: "0 0 8px" }}>Status per Mapel</div>
+          <table className="table-print" style={{ marginBottom: 14 }}><thead><tr><th>Mapel</th><th>Paket Soal</th><th></th></tr></thead><tbody>
+            {k.mapel_list.map((m) => { const u = ujianDalamKegiatan.find((x) => x.mapel === m); return <tr key={m}><td>{m}</td><td>{u ? "Sudah terpasang" : <span style={{ color: "#a96d28" }}>Belum ada</span>}</td><td>{u && <><button className="text-button" onClick={() => lihatHasil(u)}>Hasil</button> <button className="icon-button" aria-label="Batalkan" onClick={() => removeUjianMapel(u.id, k.id)}><Trash2 size={14} /></button></>}</td></tr>; })}
+          </tbody></table>
+          {k.mapel_belum.length > 0 && <div style={{ marginBottom: 16, padding: 12, background: "#fbf3ea", borderRadius: 10 }}>
+            <div className="nav-caption" style={{ padding: "0 0 8px" }}>Pasang Paket Soal untuk Mapel yang Belum</div>
+            <div className="filter-grid">
+              <label className="field">Mapel<select value={submitForm.mapel} onChange={(e) => { setSubmitForm({ ...submitForm, mapel: e.target.value, paket_id: "" }); loadPaketUntukMapel(e.target.value); }}><option value="">- Pilih -</option>{k.mapel_belum.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
+              <label className="field">Paket Soal<select value={submitForm.paket_id} onChange={(e) => setSubmitForm({ ...submitForm, paket_id: e.target.value })} disabled={!submitForm.mapel}><option value="">- Pilih paket -</option>{(paketOptions[submitForm.mapel] || []).map((p) => <option key={p.id} value={p.id}>{p.nama} ({p.jumlah_soal} soal)</option>)}</select></label>
+              <button className="primary-button filter-button" onClick={() => submitPaketMapel(k.id)}><Save size={15} /> Pasang</button>
+            </div>
+            {submitForm.mapel && !(paketOptions[submitForm.mapel] || []).length && <p className="muted" style={{ marginTop: 6 }}>Belum ada paket soal untuk mapel ini di Bank Soal.</p>}
+          </div>}
+          {k.siap_dijadwalkan && !k.mulai && <div style={{ padding: 12, background: "#e4f3e9", borderRadius: 10 }}>
+            <div className="nav-caption" style={{ padding: "0 0 8px" }}>Semua mapel sudah masuk — atur jadwal ujiannya</div>
+            <div className="filter-grid">
+              <label className="field">Jadwal Mulai<input type="datetime-local" value={jadwalForm.mulaiLocal} onChange={(e) => setJadwalForm({ ...jadwalForm, mulaiLocal: e.target.value })} /></label>
+              <label className="field">Jadwal Selesai<input type="datetime-local" value={jadwalForm.selesaiLocal} onChange={(e) => setJadwalForm({ ...jadwalForm, selesaiLocal: e.target.value })} /></label>
+              <button className="primary-button filter-button" onClick={() => simpanJadwal(k.id)}><Save size={15} /> Simpan Jadwal</button>
+            </div>
+          </div>}
+          {k.mulai && <p className="muted">Jadwal: {new Date(k.mulai).toLocaleString("id-ID")} &mdash; {new Date(k.selesai).toLocaleString("id-ID")}</p>}
+        </div>}
+      </div>)}
+    </section>
+    {viewingHasil && <section className="panel" style={{ marginTop: 18 }}>
+      <PanelHeading title={`Hasil: ${viewingHasil.mapel}`} action={<button className="icon-button" aria-label="Tutup" onClick={() => setViewingHasil(null)}><X size={18} /></button>} />
+      <div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Nilai</th><th>Pelanggaran</th><th>Status</th></tr></thead><tbody>
+        {!hasilList.length && <tr><td colSpan={4} className="text-center">Belum ada siswa yang mengerjakan</td></tr>}
+        {hasilList.map((h) => <tr key={h.id}><td>{h.student_name}</td><td className="text-center">{h.nilai ?? "-"}</td><td className="text-center">{h.pelanggaran || 0}x</td><td className="text-center">{h.selesai_at ? "Selesai" : "Sedang mengerjakan"}</td></tr>)}
+      </tbody></table></div>
+    </section>}
+  </>;
+}
+
+function KartuUjianPage({ showToast }) {
+  const [kegiatanList, setKegiatanList] = useState([]);
+  const [selectedKegiatan, setSelectedKegiatan] = useState("");
+  const [kartuList, setKartuList] = useState([]);
+  const [generating, setGenerating] = useState(false);
+  useEffect(() => { axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat daftar kegiatan")); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadKartu = (kegiatanId) => axios.get(`${API}/cbt/kartu`, { params: { kegiatan_id: kegiatanId } }).then(({ data }) => setKartuList(data)).catch(() => {});
+  useEffect(() => { if (selectedKegiatan) loadKartu(selectedKegiatan); else setKartuList([]); }, [selectedKegiatan]); // eslint-disable-line react-hooks/exhaustive-deps
+  const kegiatan = kegiatanList.find((k) => k.id === selectedKegiatan);
+  const bisaGenerate = kegiatan && kegiatan.siap_dijadwalkan && kegiatan.mulai;
+  const generate = async () => {
+    if (!selectedKegiatan) return showToast("Pilih kegiatan ujian dulu");
+    if (!bisaGenerate) return showToast("Kegiatan ini belum siap: pastikan semua mapel sudah kirim paket soal dan jadwal sudah diatur di menu Kegiatan Ujian");
+    if (kartuList.length && !window.confirm("Kartu untuk kegiatan ini sudah ada. Buat ulang? Kartu & hasil lama akan hilang.")) return;
+    setGenerating(true);
+    try { await axios.post(`${API}/cbt/kartu/generate`, {}, { params: { kegiatan_id: selectedKegiatan } }); showToast("Kartu ujian dibuat"); loadKartu(selectedKegiatan); }
+    catch (err) { showToast(errMsg(err, "Gagal membuat kartu")); }
+    finally { setGenerating(false); }
+  };
+  const cbtUrl = `${window.location.origin}/cbt`;
+
+  return <>
+    <PageTitle eyebrow="CBT" title="Kartu Ujian" description="Satu kartu untuk satu kegiatan ujian, berlaku untuk semua mapel di dalamnya." />
+    <section className="panel" style={{ marginBottom: 18 }}>
+      <div className="filter-grid">
+        <label className="field">Pilih Kegiatan Ujian<select value={selectedKegiatan} onChange={(e) => setSelectedKegiatan(e.target.value)}><option value="">- Pilih kegiatan -</option>{kegiatanList.map((k) => <option key={k.id} value={k.id}>{k.nama} (Kelas {k.class_name})</option>)}</select></label>
+        <button className="primary-button filter-button" onClick={generate} disabled={generating || !bisaGenerate}><RefreshCw size={16} /> {generating ? "Membuat..." : "Buat / Perbarui Kartu"}</button>
+      </div>
+      {kegiatan && !kegiatan.siap_dijadwalkan && <p className="muted" style={{ marginTop: 8, color: "#a96d28" }}>Belum bisa: mapel {kegiatan.mapel_belum.join(", ")} belum kirim paket soal.</p>}
+      {kegiatan && kegiatan.siap_dijadwalkan && !kegiatan.mulai && <p className="muted" style={{ marginTop: 8, color: "#a96d28" }}>Semua mapel sudah masuk, tapi jadwal belum diatur. Atur dulu di menu Kegiatan Ujian.</p>}
+      {kegiatan && bisaGenerate && <p className="muted" style={{ marginTop: 8 }}>Kelas {kegiatan.class_name} · Alamat ujian: <strong>{cbtUrl}</strong></p>}
+    </section>
+    {kartuList.length > 0 && <section className="panel">
+      <PanelHeading title={`Kartu Peserta (${kartuList.length})`} action={<button className="secondary-button no-print" onClick={() => window.print()}><Printer size={16} /> Cetak</button>} />
+      <div className="table-wrap"><table className="table-print"><thead><tr><th>Nama Siswa</th><th>Username</th><th>Password</th><th>Status</th></tr></thead><tbody>
+        {kartuList.map((k) => <tr key={k.id}><td>{k.student_name}</td><td>{k.username}</td><td>{k.password_plain}</td><td className="text-center">{k.status === "selesai" ? "Sudah ujian" : "Belum selesai"}</td></tr>)}
+      </tbody></table></div>
+    </section>}
+  </>;
+}
+
+function CBTAccountsAdmin({ showToast }) {
+  const [accounts, setAccounts] = useState([]);
+  const [form, setForm] = useState({ name: "", username: "", password: "" });
+  const [editing, setEditing] = useState(null);
+  const load = () => axios.get(`${API}/cbt-accounts`).then(({ data }) => setAccounts(data)).catch(() => showToast("Gagal memuat akun panitia CBT"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const submit = async () => {
+    if (!form.name.trim()) return showToast("Nama wajib diisi");
+    try {
+      if (editing) {
+        await axios.put(`${API}/cbt-accounts/${editing}`, { name: form.name });
+        if (form.password) await axios.put(`${API}/cbt-accounts/${editing}/password`, { password: form.password });
+        showToast("Akun panitia CBT diperbarui");
+      } else {
+        if (!form.username.trim() || form.password.length < 6) return showToast("Username & password (min 6 karakter) wajib diisi");
+        await axios.post(`${API}/cbt-accounts`, form);
+        showToast("Akun panitia CBT berhasil dibuat");
+      }
+      setForm({ name: "", username: "", password: "" }); setEditing(null); load();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan akun panitia CBT")); }
+  };
+  const editAcc = (a) => { setEditing(a.id); setForm({ name: a.name, username: a.username, password: "" }); };
+  const remove = async (id) => {
+    if (!window.confirm("Hapus akun panitia CBT ini?")) return;
+    try { await axios.delete(`${API}/cbt-accounts/${id}`); showToast("Akun dihapus"); load(); } catch { showToast("Gagal menghapus akun"); }
+  };
+  return <><PageTitle eyebrow="CBT" title="Akun Panitia CBT" description="Akun khusus untuk mengawasi ujian, reset sesi siswa, dan mengelola soal." /><section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Nama<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nama panitia" /></label><label className="field">Username{editing && <span style={{ fontWeight: 400, opacity: 0.7 }}> (tidak bisa diubah)</span>}<input value={form.username} disabled={!!editing} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label><label className="field">{editing ? "Password baru (opsional)" : "Password"}<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "Kosongkan jika tidak diganti" : "min 6 karakter"} /></label><button className="primary-button filter-button" onClick={submit}><Save size={16} /> {editing ? "Simpan perubahan" : "Buat akun"}</button>{editing && <button className="secondary-button" onClick={() => { setEditing(null); setForm({ name: "", username: "", password: "" }); }}><X size={16} /> Batal</button>}</section><section className="panel"><div className="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th></th></tr></thead><tbody>{accounts.map((a) => <tr key={a.id}><td>{a.name}</td><td>{a.username}</td><td><div style={{ display: "flex", gap: 6 }}><button className="icon-button" onClick={() => editAcc(a)}><Pencil size={16} /></button><button className="icon-button" onClick={() => remove(a.id)}><Trash2 size={16} /></button></div></td></tr>)}{!accounts.length && <tr><td colSpan="3">Belum ada akun panitia CBT.</td></tr>}</tbody></table></div></section></>;
+}
+
+function CBTMonitorPage({ showToast }) {
+  const [kegiatanList, setKegiatanList] = useState([]);
+  const [selectedKegiatan, setSelectedKegiatan] = useState("");
+  const [data, setData] = useState([]);
+  const load = () => axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat daftar kegiatan"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadMonitor = () => selectedKegiatan && axios.get(`${API}/cbt/monitor`, { params: { kegiatan_id: selectedKegiatan } }).then(({ data }) => setData(data)).catch(() => {});
+  useEffect(() => { loadMonitor(); if (!selectedKegiatan) return; const t = setInterval(loadMonitor, 8000); return () => clearInterval(t); }, [selectedKegiatan]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reset = async (h) => {
+    if (!window.confirm(`Reset sesi ${h.mapel} milik ${h.student_name}? Jawaban yang sudah ada akan hilang dan dia bisa mengerjakan ulang mapel ini dari awal.`)) return;
+    try { await axios.post(`${API}/cbt/reset/${h.id}`); showToast("Sesi berhasil direset"); loadMonitor(); }
+    catch (err) { showToast(errMsg(err, "Gagal mereset sesi")); }
+  };
+  const fmtDur = (s) => `${Math.floor(s / 60)}m ${s % 60}d`;
+  return <>
+    <PageTitle eyebrow="CBT" title="Pengawasan Ujian" description="Pantau siswa yang sedang mengerjakan, reset jika ada kecurangan." />
+    <section className="panel" style={{ marginBottom: 18 }}>
+      <label className="field">Pilih Kegiatan Ujian<select value={selectedKegiatan} onChange={(e) => setSelectedKegiatan(e.target.value)}><option value="">- Pilih kegiatan -</option>{kegiatanList.map((k) => <option key={k.id} value={k.id}>{k.nama} (Kelas {k.class_name})</option>)}</select></label>
+    </section>
+    {selectedKegiatan && <section className="panel">
+      <PanelHeading title={`Peserta (${data.length})`} subtitle="Otomatis diperbarui tiap 8 detik" />
+      <div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Mapel</th><th>Waktu Kerja</th><th>Pelanggaran</th><th>Status</th><th></th></tr></thead><tbody>
+        {!data.length && <tr><td colSpan={6} className="text-center">Belum ada siswa yang login kegiatan ini</td></tr>}
+        {data.map((h) => <tr key={h.id}><td>{h.student_name}</td><td>{h.mapel}</td><td className="text-center">{fmtDur(h.durasi_kerja_detik)}</td><td className="text-center">{h.pelanggaran > 2 ? <span style={{ color: "#c0392b", fontWeight: 700 }}>{h.pelanggaran}x</span> : `${h.pelanggaran || 0}x`}</td><td className="text-center">{h.selesai_at ? `Selesai (${h.nilai})` : "Sedang mengerjakan"}</td><td><button className="text-button" style={{ color: "#c0392b" }} onClick={() => reset(h)}>Reset</button></td></tr>)}
+      </tbody></table></div>
+    </section>}
+  </>;
+}
+
+function CBTHasilAngkatanPage({ showToast }) {
+  const [angkatan, setAngkatan] = useState("7");
+  const [tipe, setTipe] = useState("");
+  const download = async () => {
+    try {
+      const res = await axios.get(`${API}/cbt/hasil-angkatan`, { params: { angkatan, tipe: tipe || undefined }, responseType: "blob" });
+      const url = URL.createObjectURL(res.data); const a = document.createElement("a"); a.href = url; a.download = `hasil-cbt-angkatan-${angkatan}.xlsx`; a.click(); URL.revokeObjectURL(url);
+    } catch { showToast("Gagal mengunduh hasil"); }
+  };
+  return <>
+    <PageTitle eyebrow="CBT" title="Hasil per Angkatan" description="Unduh rekap nilai seluruh mata pelajaran untuk satu angkatan sekaligus." />
+    <section className="panel filter-grid">
+      <label className="field">Angkatan (Kelas)<select value={angkatan} onChange={(e) => setAngkatan(e.target.value)}><option value="7">Kelas 7</option><option value="8">Kelas 8</option><option value="9">Kelas 9</option></select></label>
+      <label className="field">Jenis Ujian<select value={tipe} onChange={(e) => setTipe(e.target.value)}><option value="">Semua jenis</option><option value="Harian">Ulangan Harian</option><option value="ASTS">ASTS</option><option value="ASAS">ASAS</option><option value="Lainnya">Lainnya</option></select></label>
+      <button className="primary-button filter-button" onClick={download}><FileDown size={16} /> Unduh Excel</button>
+    </section>
+  </>;
+}
+
+const CBT_ADMIN_NAV = [
+  { id: "monitor", label: "Pengawasan Ujian", icon: ShieldCheck },
+  { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
+  { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
+  { id: "hasil-angkatan", label: "Hasil per Angkatan", icon: BarChart3 },
+];
+
+function CBTAdminApp({ user, showToast, toast, onLogout, masters }) {
+  const [active, setActive] = useState("monitor");
+  const classes = (masters?.classes || []).map((c) => c.name);
+  const subjects = (masters?.subjects || []).map((s) => s.name);
+  return <MobileShell subtitle="Panitia CBT" roleLabel="Panitia CBT" user={user} navItems={CBT_ADMIN_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
+    {active === "monitor" && <CBTMonitorPage showToast={showToast} />}
+    {active === "bank-soal" && <BankSoalPage showToast={showToast} subjects={subjects} />}
+    {active === "ujian-cbt" && <UjianKegiatanPage showToast={showToast} classes={classes} subjects={subjects} />}
+    {active === "hasil-angkatan" && <CBTHasilAngkatanPage showToast={showToast} />}
+  </MobileShell>;
 }
 
 function BebanMengajarAdmin({ showToast, classes, subjects }) {
@@ -1070,6 +1774,8 @@ function PiketAbsensi({ showToast, shift }) {
   useEffect(() => { loadHistory(); }, [historyDate]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleJam = (idx, jam) => setSchedule((prev) => { const entries = [...prev.entries]; const e = { ...entries[idx] }; e.jam_hadir = e.jam_hadir.includes(jam) ? e.jam_hadir.filter((j) => j !== jam) : [...e.jam_hadir, jam].sort((a, b) => a - b); entries[idx] = e; return { ...prev, entries }; });
   const setEntryStatus = (idx, status) => setSchedule((prev) => { const entries = [...prev.entries]; entries[idx] = { ...entries[idx], status }; return { ...prev, entries }; });
+  const markTeacherAbsent = (teacher, status) => setSchedule((prev) => ({ ...prev, entries: prev.entries.map((e) => e.teacher === teacher ? { ...e, jam_hadir: [], status } : e) }));
+  const markTeacherHadir = (teacher) => setSchedule((prev) => ({ ...prev, entries: prev.entries.map((e) => e.teacher === teacher ? { ...e, jam_hadir: Array.from({ length: e.jam_akhir - e.jam_awal + 1 }, (_, i) => e.jam_awal + i), status: "" } : e) }));
   const togglePiketGuru = (name) => setSchedule((prev) => ({ ...prev, piket_guru: prev.piket_guru.includes(name) ? prev.piket_guru.filter((n) => n !== name) : [...prev.piket_guru, name] }));
   const isSenin = hari === "Senin", isKamis = hari === "Kamis", isJumat = hari === "Jumat";
   const showUpacara = isSenin && shift === "Pagi";
@@ -1100,14 +1806,31 @@ function PiketAbsensi({ showToast, shift }) {
     </div>
     <section className="panel roster-panel">
       <PanelHeading title="Jadwal mengajar hari ini" subtitle={`${schedule.entries.length} slot mengajar`} />
-      <div className="table-wrap"><table><thead><tr><th>Guru</th><th>Kelas</th><th>Mapel</th><th>Jam ke (centang yang diajar)</th><th>Status</th></tr></thead><tbody>
-        {schedule.entries.map((e, idx) => {
-          const jamList = Array.from({ length: e.jam_akhir - e.jam_awal + 1 }, (_, i) => e.jam_awal + i);
-          return <tr key={idx}><td>{e.teacher}</td><td>{e.class_name}</td><td>{e.subject}</td>
-            <td><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{jamList.map((j) => <label key={j} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11 }}><input type="checkbox" checked={e.jam_hadir.includes(j)} onChange={() => toggleJam(idx, j)} />{j}</label>)}</div></td>
-            <td><select value={e.status} onChange={(ev) => setEntryStatus(idx, ev.target.value)} disabled={e.jam_hadir.length > 0}><option value="">Hadir</option><option value="Sakit">Sakit</option><option value="Izin">Izin</option><option value="Alpa">Alpa</option></select></td>
-          </tr>;
-        })}
+      <div className="table-wrap"><table className="piket-schedule-table"><thead><tr><th>Guru</th><th>Kelas</th><th>Mapel</th><th>Jam ke (centang yang diajar)</th><th>Status</th></tr></thead><tbody>
+        {(() => {
+          const sorted = schedule.entries.map((e, idx) => ({ ...e, idx })).sort((a, b) => a.teacher.localeCompare(b.teacher));
+          const rowSpans = {};
+          sorted.forEach((e) => { rowSpans[e.teacher] = (rowSpans[e.teacher] || 0) + 1; });
+          const shown = new Set();
+          return sorted.map((e) => {
+            const jamList = Array.from({ length: e.jam_akhir - e.jam_awal + 1 }, (_, i) => e.jam_awal + i);
+            const showName = !shown.has(e.teacher);
+            shown.add(e.teacher);
+            const allAbsent = rowSpans[e.teacher] > 0 && sorted.filter((x) => x.teacher === e.teacher).every((x) => x.jam_hadir.length === 0);
+            return <tr key={e.idx} className={e.jam_hadir.length === 0 ? "row-absent" : ""}>
+              {showName && <td rowSpan={rowSpans[e.teacher]} className="piket-teacher-cell">
+                <div className="piket-teacher-name">{e.teacher}</div>
+                {rowSpans[e.teacher] > 1 && <div className="piket-teacher-actions">
+                  {!allAbsent ? <><button type="button" className="chip-button rose" onClick={() => markTeacherAbsent(e.teacher, "Sakit")}>Sakit</button><button type="button" className="chip-button amber" onClick={() => markTeacherAbsent(e.teacher, "Izin")}>Izin</button><button type="button" className="chip-button rose" onClick={() => markTeacherAbsent(e.teacher, "Alpa")}>Alpa</button></>
+                    : <button type="button" className="chip-button green" onClick={() => markTeacherHadir(e.teacher)}>Hadir semua</button>}
+                </div>}
+              </td>}
+              <td>{e.class_name}</td><td>{e.subject}</td>
+              <td><div className="jam-checklist">{jamList.map((j) => <label key={j} className="jam-check"><input type="checkbox" checked={e.jam_hadir.includes(j)} onChange={() => toggleJam(e.idx, j)} />{j}</label>)}</div></td>
+              <td><select value={e.status} onChange={(ev) => setEntryStatus(e.idx, ev.target.value)} disabled={e.jam_hadir.length > 0}><option value="">Hadir</option><option value="Sakit">Sakit</option><option value="Izin">Izin</option><option value="Alpa">Alpa</option></select></td>
+            </tr>;
+          });
+        })()}
         {!schedule.entries.length && <tr><td colSpan="5">Tidak ada jadwal mengajar untuk tanggal & shift ini.</td></tr>}
       </tbody></table></div>
     </section>
@@ -1229,12 +1952,11 @@ function PiketRekap({ showToast }) {
         const perGuru = {};
         data.forEach((h) => h.entries.forEach((e) => {
           const key = `${e.teacher}__${h.shift}`;
-          perGuru[key] = perGuru[key] || { teacher: e.teacher, shift: h.shift, jam: 0, kelas: [], mapel: [], status: e.status || "Hadir" };
+          perGuru[key] = perGuru[key] || { teacher: e.teacher, shift: h.shift, jam: 0, entries: [], status: e.status || "Hadir" };
           perGuru[key].jam += e.jam_hadir.length;
-          perGuru[key].kelas.push(e.class_name);
-          perGuru[key].mapel.push(e.subject);
+          perGuru[key].entries.push({ class_name: e.class_name, subject: e.subject, jamKe: e.jam_awal === e.jam_akhir ? `${e.jam_awal}` : `${e.jam_awal}-${e.jam_akhir}` });
         }));
-        const rows = Object.values(perGuru).map((g) => ({ teacher: g.teacher, shift: g.shift, jam: g.jam, status: g.status, kelas: g.kelas.join(", "), mapel: g.mapel.join(", ") }));
+        const rows = Object.values(perGuru);
         rows.sort((a, b) => a.shift.localeCompare(b.shift) || a.teacher.localeCompare(b.teacher));
         setPreview({ type: "kehadiranguru", rows });
       } else if (jenis === "pembiasaan") {
@@ -1292,9 +2014,18 @@ function PiketRekap({ showToast }) {
       </>}
       {preview.type === "kehadiranguru" && <>
         <div className="sub-laporan">Tanggal {dateFrom}</div>
-        <table className="table-print"><thead><tr><th>No</th><th>Shift</th><th>Guru</th><th>Kelas</th><th>Mapel</th><th>JML JP</th><th>Status</th></tr></thead><tbody>
-          {!preview.rows.length && <tr><td colSpan={7} className="text-center">Tidak ada data</td></tr>}
-          {preview.rows.map((r, i) => <tr key={i}><td className="text-center">{i + 1}</td><td className="text-center">{r.shift}</td><td>{r.teacher}</td><td>{r.kelas}</td><td>{r.mapel}</td><td className="text-center">{r.jam}</td><td className="text-center">{r.status}</td></tr>)}
+        <table className="table-print"><thead><tr><th>No</th><th>Shift</th><th>Guru</th><th>Kelas</th><th>Mapel</th><th>Jam ke-</th><th>JML JP</th><th>Status</th></tr></thead><tbody>
+          {!preview.rows.length && <tr><td colSpan={8} className="text-center">Tidak ada data</td></tr>}
+          {preview.rows.map((r, i) => <tr key={i}>
+            <td className="text-center">{i + 1}</td>
+            <td className="text-center">{r.shift}</td>
+            <td>{r.teacher}</td>
+            <td>{r.entries.map((en, j) => <div key={j}>{en.class_name}</div>)}</td>
+            <td>{r.entries.map((en, j) => <div key={j}>{en.subject}</div>)}</td>
+            <td className="text-center">{r.entries.map((en, j) => <div key={j}>{en.jamKe}</div>)}</td>
+            <td className="text-center">{r.jam}</td>
+            <td className="text-center">{r.status}</td>
+          </tr>)}
         </tbody></table>
       </>}
       {preview.type === "pembiasaan" && <>
@@ -1363,34 +2094,88 @@ function WaliKelasAdmin({ showToast, teachers, classes, onReload }) {
   return <><PageTitle eyebrow="Administrasi" title="Wali Kelas" description="Tandai guru sebagai wali kelas agar mereka bisa melihat riwayat absen & siswa yang perlu perhatian." /><section className="panel"><div className="table-wrap"><table><thead><tr><th>Nama Guru</th><th>Wali Kelas</th></tr></thead><tbody>{(teachers || []).map((t) => <tr key={t.id}><td>{t.name}</td><td><select value={t.homeroom_class || ""} onChange={(e) => setHomeroom(t.id, e.target.value)}><option value="">- Bukan wali kelas -</option>{classes.map((c) => <option key={c} value={c}>{c}</option>)}</select></td></tr>)}{!(teachers || []).length && <tr><td colSpan="2">Belum ada data guru.</td></tr>}</tbody></table></div></section></>;
 }
 
-function SekretarisAccountsAdmin({ showToast, classes }) {
-  const [accounts, setAccounts] = useState([]);
-  const [form, setForm] = useState({ name: "", username: "", password: "", secretary_class: "" });
-  const [editing, setEditing] = useState(null);
-  const load = () => axios.get(`${API}/sekretaris-accounts`).then(({ data }) => setAccounts(data)).catch(() => showToast("Gagal memuat akun sekretaris"));
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const submit = async () => {
-    if (!form.name.trim() || !form.secretary_class) return showToast("Nama dan kelas wajib diisi");
+function JabatanKelasAdmin({ showToast, classes }) {
+  const [filterClass, setFilterClass] = useState(classes?.[0] || "");
+  const [students, setStudents] = useState([]);
+  const [jabatanMap, setJabatanMap] = useState({});
+  const [saving, setSaving] = useState({});
+
+  const loadStudents = async (cls) => {
+    if (!cls) return;
+    const [siswaRes, jabRes] = await Promise.allSettled([
+      axios.get(`${API}/students`, { params: { class_name: cls } }),
+      axios.get(`${API}/jabatan-kelas`, { params: { class_name: cls } }),
+    ]);
+    if (siswaRes.status === "fulfilled") setStudents(siswaRes.value.data);
+    else showToast("Gagal memuat data siswa");
+    if (jabRes.status === "fulfilled") {
+      const map = {};
+      jabRes.value.data.forEach((j) => { map[String(j.student_id)] = j.jabatan; });
+      setJabatanMap(map);
+    }
+  };
+
+  useEffect(() => { loadStudents(filterClass); }, [filterClass]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const assignJabatan = async (studentId, jabatan) => {
+    setSaving((s) => ({ ...s, [studentId]: true }));
     try {
-      if (editing) {
-        await axios.put(`${API}/sekretaris-accounts/${editing}`, { name: form.name, secretary_class: form.secretary_class });
-        if (form.password) await axios.put(`${API}/sekretaris-accounts/${editing}/password`, { password: form.password });
-        showToast("Akun sekretaris diperbarui");
-      } else {
-        if (!form.username.trim() || form.password.length < 6) return showToast("Username & password (min 6 karakter) wajib diisi");
-        await axios.post(`${API}/sekretaris-accounts`, form);
-        showToast("Akun sekretaris berhasil dibuat");
-      }
-      setForm({ name: "", username: "", password: "", secretary_class: "" }); setEditing(null); load();
-    } catch (err) { showToast(errMsg(err, "Gagal menyimpan akun sekretaris")); }
+      await axios.put(`${API}/jabatan-kelas/${studentId}`, { jabatan: jabatan || null });
+      setJabatanMap((m) => ({ ...m, [studentId]: jabatan || null }));
+      showToast(jabatan ? `Jabatan ${jabatan} berhasil ditetapkan` : "Jabatan dihapus");
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan jabatan")); }
+    finally { setSaving((s) => ({ ...s, [studentId]: false })); }
   };
-  const editAcc = (a) => { setEditing(a.id); setForm({ name: a.name, username: a.username, password: "", secretary_class: a.secretary_class }); };
-  const remove = async (id) => {
-    if (!window.confirm("Hapus akun sekretaris ini?")) return;
-    try { await axios.delete(`${API}/sekretaris-accounts/${id}`); showToast("Akun sekretaris dihapus"); load(); } catch { showToast("Gagal menghapus akun"); }
-  };
-  return <><PageTitle eyebrow="Administrasi" title="Akun Sekretaris Kelas" description="Satu akun untuk satu kelas." /><section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Nama (label)<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Contoh: Sekretaris 7A" /></label><label className="field">Username{editing && <span style={{ fontWeight: 400, opacity: 0.7 }}> (tidak bisa diubah)</span>}<input value={form.username} disabled={!!editing} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="username login" /></label><label className="field">{editing ? "Password baru (opsional)" : "Password"}<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "Kosongkan jika tidak diganti" : "min 6 karakter"} /></label><label className="field">Kelas<select value={form.secretary_class} onChange={(e) => setForm({ ...form, secretary_class: e.target.value })}><option value="">- Pilih kelas -</option>{classes.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><button className="primary-button filter-button" onClick={submit}><Save size={16} /> {editing ? "Simpan perubahan" : "Buat akun"}</button>{editing && <button className="secondary-button" onClick={() => { setEditing(null); setForm({ name: "", username: "", password: "", secretary_class: "" }); }}><X size={16} /> Batal</button>}</section><section className="panel"><div className="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Kelas</th><th></th></tr></thead><tbody>{accounts.map((a) => <tr key={a.id}><td>{a.name}</td><td>{a.username}</td><td>{a.secretary_class}</td><td><div style={{ display: "flex", gap: 6 }}><button className="icon-button" onClick={() => editAcc(a)}><Pencil size={16} /></button><button className="icon-button" onClick={() => remove(a.id)}><Trash2 size={16} /></button></div></td></tr>)}{!accounts.length && <tr><td colSpan="4">Belum ada akun sekretaris kelas.</td></tr>}</tbody></table></div></section></>;
+
+  return <>
+    <PageTitle eyebrow="Wali Kelas" title="Jabatan Kelas" description="Tetapkan sekretaris dan bendahara dari siswa. Akun siswa yang dipilih otomatis mendapat menu tambahan." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Pilih Kelas
+        <select value={filterClass} onChange={(e) => setFilterClass(e.target.value)}>
+          {classes.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
+    </div>
+    <section className="panel">
+      <PanelHeading title={`Daftar Siswa Kelas ${filterClass}`} subtitle="Pilih jabatan untuk setiap siswa (maks. 1 sekretaris & 1 bendahara per kelas)" />
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama Siswa</th><th>Jabatan</th><th>Status</th></tr></thead>
+          <tbody>
+            {students.map((s) => {
+              const jabatan = jabatanMap[s.id] || "";
+              const isSekretaris = jabatan === "Sekretaris";
+              const isBendahara = jabatan === "Bendahara";
+              const sudahAdaSekretaris = Object.values(jabatanMap).includes("Sekretaris");
+              const sudahAdaBendahara = Object.values(jabatanMap).includes("Bendahara");
+              return <tr key={s.id}>
+                <td>{s.name}</td>
+                <td>
+                  <select
+                    value={jabatan}
+                    disabled={saving[s.id]}
+                    onChange={(e) => assignJabatan(s.id, e.target.value)}
+                  >
+                    <option value="">— Tidak ada jabatan —</option>
+                    <option value="Sekretaris" disabled={sudahAdaSekretaris && !isSekretaris}>Sekretaris</option>
+                    <option value="Bendahara" disabled={sudahAdaBendahara && !isBendahara}>Bendahara</option>
+                  </select>
+                </td>
+                <td>
+                  {isSekretaris && <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>Sekretaris</span>}
+                  {isBendahara && <span style={{ fontSize: 12, background: "#dbeafe", color: "#1e40af", padding: "2px 8px", borderRadius: 12 }}>Bendahara</span>}
+                  {!jabatan && <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>}
+                </td>
+              </tr>;
+            })}
+            {!students.length && <tr><td colSpan="3">Belum ada siswa di kelas ini.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
 }
+
+
 
 function DailyAttendanceAbsen({ showToast, className, canEditAlways, hideStats }) {
   const [date, setDate] = useState(today());
@@ -1507,10 +2292,15 @@ function DailyAttendanceRekap({ showToast, classes, fixedClass }) {
 }
 
 function WaliKelasPage({ showToast, homeroomClass }) {
+  const [tab, setTab] = useState("absensi");
   const [alfaList, setAlfaList] = useState([]);
   const [history, setHistory] = useState([]);
   const [rangeFrom, setRangeFrom] = useState(`${today().slice(0, 7)}-01`);
   const [rangeTo, setRangeTo] = useState(today());
+  const [students, setStudents] = useState([]);
+  const [jabatanMap, setJabatanMap] = useState({});
+  const [savingJabatan, setSavingJabatan] = useState({});
+
   const loadDashboard = () => {
     if (!homeroomClass) return;
     axios.get(`${API}/daily-attendance/history`, { params: { class_name: homeroomClass, date_from: rangeFrom, date_to: rangeTo } }).then(({ data }) => {
@@ -1520,27 +2310,277 @@ function WaliKelasPage({ showToast, homeroomClass }) {
       setAlfaList(Object.entries(count).filter(([, c]) => c > 3).sort((a, b) => b[1] - a[1]));
     }).catch(() => showToast("Gagal memuat data kelas"));
   };
+
+  const loadJabatan = async () => {
+    if (!homeroomClass) return;
+    // Jalankan paralel, siswa tetap muncul walau jabatan gagal
+    const [siswaRes, jabRes] = await Promise.allSettled([
+      axios.get(`${API}/students`, { params: { class_name: homeroomClass } }),
+      axios.get(`${API}/jabatan-kelas`, { params: { class_name: homeroomClass } }),
+    ]);
+    if (siswaRes.status === "fulfilled") {
+      setStudents(siswaRes.value.data);
+    } else {
+      showToast("Gagal memuat data siswa");
+    }
+    if (jabRes.status === "fulfilled") {
+      const map = {};
+      jabRes.value.data.forEach((j) => { map[String(j.student_id)] = j.jabatan; });
+      setJabatanMap(map);
+    }
+    // jabatan gagal diabaikan diam-diam, siswa tetap tampil
+  };
+
   useEffect(() => { loadDashboard(); }, [homeroomClass, rangeFrom, rangeTo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (tab === "jabatan") loadJabatan(); }, [tab, homeroomClass]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const removeEntry = async (id) => {
     if (!window.confirm("Hapus data absensi tanggal ini?")) return;
     try { await axios.delete(`${API}/daily-attendance/${id}`); showToast("Data dihapus"); loadDashboard(); } catch { showToast("Gagal menghapus data"); }
   };
+
+  const assignJabatan = async (studentId, jabatan) => {
+    setSavingJabatan((s) => ({ ...s, [studentId]: true }));
+    try {
+      await axios.put(`${API}/jabatan-kelas/${studentId}`, { jabatan: jabatan || null });
+      setJabatanMap((m) => ({ ...m, [studentId]: jabatan || null }));
+      showToast(jabatan ? `Jabatan ${jabatan} berhasil ditetapkan` : "Jabatan dihapus");
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Gagal menyimpan jabatan — pastikan server sudah diperbarui";
+      showToast(msg);
+      // Rollback dropdown ke nilai sebelumnya
+      await loadJabatan();
+    }
+    finally { setSavingJabatan((s) => ({ ...s, [studentId]: false })); }
+  };
+
   if (!homeroomClass) return <PageTitle eyebrow="Wali Kelas" title="Wali Kelas" description="Anda belum ditandai sebagai wali kelas manapun." />;
   const totals = { H: 0, S: 0, I: 0, A: 0 };
   history.forEach((h) => h.entries.forEach((e) => { totals[e.status] = (totals[e.status] || 0) + 1; }));
+
+  const tabStyle = (t) => ({ ...( tab === t ? { background: "#176b4a", color: "#fff" } : {}) });
+
   return <>
-    <PageTitle eyebrow="Wali Kelas" title={`Kelas ${homeroomClass}`} description="Pantau kehadiran, koreksi absensi, dan cetak rekap kelas Anda." />
-    <div className="stat-grid"><Stat label="Hadir" value={totals.H} change="Rentang dipilih" icon={Check} color="green" /><Stat label="Sakit" value={totals.S} change="Rentang dipilih" icon={Thermometer} color="amber" /><Stat label="Izin" value={totals.I} change="Rentang dipilih" icon={DoorOpen} color="blue" /><Stat label="Alfa" value={totals.A} change="Rentang dipilih" icon={X} color="rose" /></div>
-    <div className="filter-grid panel no-print"><label className="field">Dari tanggal<input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label><label className="field">Sampai tanggal<input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} /></label></div>
-    {alfaList.length > 0 && <section className="panel" style={{ marginBottom: 18, borderColor: "#fecaca" }}><PanelHeading title="Perlu Perhatian (Alfa lebih dari 3x)" action={<AlertTriangle size={18} color="#dc2626" />} /><div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Jumlah Alfa</th></tr></thead><tbody>{alfaList.map(([nm, c]) => <tr key={nm}><td>{nm}</td><td className="text-center">{c}x</td></tr>)}</tbody></table></div></section>}
-    <section className="panel"><PanelHeading title="Riwayat absen kelas" subtitle={`${history.length} hari tercatat`} /><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Hadir</th><th>Sakit</th><th>Izin</th><th>Alfa</th><th>Dicatat oleh</th><th></th></tr></thead><tbody>{history.map((h) => { const c = { H: 0, S: 0, I: 0, A: 0 }; h.entries.forEach((e) => { c[e.status] = (c[e.status] || 0) + 1; }); return <tr key={h.id}><td>{h.date}</td><td className="text-center">{c.H}</td><td className="text-center">{c.S}</td><td className="text-center">{c.I}</td><td className="text-center">{c.A}</td><td>{h.recorded_by}</td><td><button className="icon-button" onClick={() => removeEntry(h.id)}><Trash2 size={16} /></button></td></tr>; })}{!history.length && <tr><td colSpan="7">Belum ada data absensi.</td></tr>}</tbody></table></div></section>
-    <section className="panel" style={{ marginTop: 18 }}><PanelHeading title="Koreksi absen (input ulang tanggal tertentu)" /><DailyAttendanceAbsen showToast={showToast} className={homeroomClass} canEditAlways hideStats /></section>
-    <section style={{ marginTop: 18 }}><DailyAttendanceRekap showToast={showToast} fixedClass={homeroomClass} classes={[homeroomClass]} /></section>
+    <PageTitle eyebrow="Wali Kelas" title={`Kelas ${homeroomClass}`} description="Pantau kehadiran, atur jabatan kelas, dan cetak rekap." />
+    <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <button className="secondary-button" style={tabStyle("absensi")} onClick={() => setTab("absensi")}><CheckSquare size={16} /> Absensi</button>
+      <button className="secondary-button" style={tabStyle("jabatan")} onClick={() => setTab("jabatan")}><UserRound size={16} /> Jabatan Kelas</button>
+      <button className="secondary-button" style={tabStyle("kas")} onClick={() => setTab("kas")}><Wallet size={16} /> Uang Kas</button>
+    </div>
+
+    {tab === "absensi" && <>
+      <div className="stat-grid"><Stat label="Hadir" value={totals.H} change="Rentang dipilih" icon={Check} color="green" /><Stat label="Sakit" value={totals.S} change="Rentang dipilih" icon={Thermometer} color="amber" /><Stat label="Izin" value={totals.I} change="Rentang dipilih" icon={DoorOpen} color="blue" /><Stat label="Alfa" value={totals.A} change="Rentang dipilih" icon={X} color="rose" /></div>
+      <div className="filter-grid panel no-print"><label className="field">Dari tanggal<input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} /></label><label className="field">Sampai tanggal<input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} /></label></div>
+      {alfaList.length > 0 && <section className="panel" style={{ marginBottom: 18, borderColor: "#fecaca" }}><PanelHeading title="Perlu Perhatian (Alfa lebih dari 3x)" action={<AlertTriangle size={18} color="#dc2626" />} /><div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Jumlah Alfa</th></tr></thead><tbody>{alfaList.map(([nm, c]) => <tr key={nm}><td>{nm}</td><td className="text-center">{c}x</td></tr>)}</tbody></table></div></section>}
+      <section className="panel"><PanelHeading title="Riwayat absen kelas" subtitle={`${history.length} hari tercatat`} /><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Hadir</th><th>Sakit</th><th>Izin</th><th>Alfa</th><th>Dicatat oleh</th><th></th></tr></thead><tbody>{history.map((h) => { const c = { H: 0, S: 0, I: 0, A: 0 }; h.entries.forEach((e) => { c[e.status] = (c[e.status] || 0) + 1; }); return <tr key={h.id}><td>{h.date}</td><td className="text-center">{c.H}</td><td className="text-center">{c.S}</td><td className="text-center">{c.I}</td><td className="text-center">{c.A}</td><td>{h.recorded_by}</td><td><button className="icon-button" onClick={() => removeEntry(h.id)}><Trash2 size={16} /></button></td></tr>; })}{!history.length && <tr><td colSpan="7">Belum ada data absensi.</td></tr>}</tbody></table></div></section>
+      <section className="panel" style={{ marginTop: 18 }}><PanelHeading title="Koreksi absen (input ulang tanggal tertentu)" /><DailyAttendanceAbsen showToast={showToast} className={homeroomClass} canEditAlways hideStats /></section>
+      <section style={{ marginTop: 18 }}><DailyAttendanceRekap showToast={showToast} fixedClass={homeroomClass} classes={[homeroomClass]} /></section>
+    </>}
+
+    {tab === "jabatan" && <>
+      <section className="panel">
+        <PanelHeading title="Jabatan Kelas" subtitle="Siswa yang dipilih otomatis mendapat menu Sekretaris atau Bendahara di akun mereka" />
+        <div className="table-wrap">
+          <table><thead><tr><th>Nama Siswa</th><th>Jabatan</th><th>Status</th></tr></thead>
+            <tbody>
+              {students.map((s) => {
+                const jabatan = jabatanMap[String(s.id)] || "";
+                const isSekretaris = jabatan === "Sekretaris";
+                const isBendahara = jabatan === "Bendahara";
+                const sudahAdaSekretaris = Object.values(jabatanMap).includes("Sekretaris");
+                const sudahAdaBendahara = Object.values(jabatanMap).includes("Bendahara");
+                return <tr key={s.id}>
+                  <td>{s.name}</td>
+                  <td>
+                    <select
+                      value={jabatan}
+                      disabled={savingJabatan[String(s.id)]}
+                      onChange={(e) => assignJabatan(String(s.id), e.target.value)}
+                    >
+                      <option value="">— Tidak ada jabatan —</option>
+                      <option value="Sekretaris" disabled={sudahAdaSekretaris && !isSekretaris}>Sekretaris</option>
+                      <option value="Bendahara" disabled={sudahAdaBendahara && !isBendahara}>Bendahara</option>
+                    </select>
+                  </td>
+                  <td>
+                    {isSekretaris && <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>Sekretaris</span>}
+                    {isBendahara && <span style={{ fontSize: 12, background: "#dbeafe", color: "#1e40af", padding: "2px 8px", borderRadius: 12 }}>Bendahara</span>}
+                    {!jabatan && <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>}
+                  </td>
+                </tr>;
+              })}
+              {!students.length && <tr><td colSpan="3">Belum ada siswa di kelas ini.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>}
+
+    {tab === "kas" && <>
+      <section className="panel"><PanelHeading title="Uang Kas Kelas" subtitle="Pembayaran dicatat oleh sekretaris kelas" /><UangKasPage showToast={showToast} className={homeroomClass} canEdit={false} canSetTarget /></section>
+    </>}
+  </>;
+}
+
+function UangKasPage({ showToast, className, canEdit, canSetTarget }) {
+  const [tab, setTab] = useState("bayar");
+  const [students, setStudents] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [bulan, setBulan] = useState(today().slice(0, 7));
+  const [bayarList, setBayarList] = useState([]);
+  const [allBayar, setAllBayar] = useState([]);
+  const [target, setTarget] = useState(0);
+  const [targetInput, setTargetInput] = useState("0");
+  const [tahunAjaran, setTahunAjaran] = useState(() => { const now = new Date(); return now.getMonth() + 1 >= 7 ? now.getFullYear() : now.getFullYear() - 1; });
+  const [kurangBayar, setKurangBayar] = useState({ target: 0, students: [] });
+  const [pengeluaranList, setPengeluaranList] = useState([]);
+  const [formBayar, setFormBayar] = useState({ student_name: "", bulan: today().slice(0, 7), jumlah: "", tanggal: today(), catatan: "" });
+  const [formPengeluaran, setFormPengeluaran] = useState({ tanggal: today(), keterangan: "", jumlah: "" });
+
+  const rupiah = (n) => `Rp${(n || 0).toLocaleString("id-ID")}`;
+  const rb = (n) => { if (!n) return "-"; return n % 1000 === 0 ? `${n / 1000}rb` : `Rp${n.toLocaleString("id-ID")}`; };
+  const MONTH_LABEL = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  const monthsOfYear = (startYear) => {
+    const list = [];
+    for (let m = 7; m <= 12; m++) list.push({ ym: `${startYear}-${String(m).padStart(2, "0")}`, label: MONTH_LABEL[m - 1] });
+    for (let m = 1; m <= 6; m++) list.push({ ym: `${startYear + 1}-${String(m).padStart(2, "0")}`, label: MONTH_LABEL[m - 1] });
+    return list;
+  };
+  const months = monthsOfYear(tahunAjaran);
+
+  const loadSummary = () => axios.get(`${API}/kas/${className}/summary`).then(({ data }) => setSummary(data)).catch(() => showToast("Gagal memuat ringkasan kas"));
+  const loadStudents = () => axios.get(`${API}/students`, { params: { class_name: className } }).then(({ data }) => setStudents(data)).catch(() => {});
+  const loadBayar = () => axios.get(`${API}/kas/${className}/bayar`, { params: { bulan } }).then(({ data }) => setBayarList(data)).catch(() => {});
+  const loadAllBayar = () => axios.get(`${API}/kas/${className}/bayar`).then(({ data }) => setAllBayar(data)).catch(() => {});
+  const loadTarget = () => axios.get(`${API}/kas/${className}/target`).then(({ data }) => { setTarget(data.target); setTargetInput(String(data.target)); }).catch(() => {});
+  const loadKurangBayar = () => axios.get(`${API}/kas/${className}/kurang-bayar`, { params: { bulan } }).then(({ data }) => setKurangBayar(data)).catch(() => {});
+  const loadPengeluaran = () => axios.get(`${API}/kas/${className}/pengeluaran`).then(({ data }) => setPengeluaranList(data)).catch(() => {});
+
+  useEffect(() => { loadSummary(); loadTarget(); if (canEdit) loadStudents(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (tab === "bayar" && canEdit) loadBayar();
+    if (tab === "rekap") loadAllBayar();
+    if (tab === "kurang") loadKurangBayar();
+    if (tab === "pengeluaran" && canEdit) loadPengeluaran();
+  }, [tab, bulan]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const submitBayar = async () => {
+    if (!formBayar.student_name || !formBayar.jumlah) return showToast("Nama siswa dan jumlah wajib diisi");
+    try {
+      await axios.post(`${API}/kas/${className}/bayar`, { ...formBayar, jumlah: Number(formBayar.jumlah) });
+      showToast("Pembayaran tersimpan");
+      setFormBayar({ ...formBayar, student_name: "", jumlah: "", catatan: "" });
+      loadBayar(); loadSummary();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan pembayaran")); }
+  };
+  const removeBayar = async (id) => {
+    if (!window.confirm("Hapus data pembayaran ini?")) return;
+    try { await axios.delete(`${API}/kas/bayar/${id}`); showToast("Data dihapus"); loadBayar(); loadSummary(); }
+    catch { showToast("Gagal menghapus"); }
+  };
+  const submitPengeluaran = async () => {
+    if (!formPengeluaran.keterangan || !formPengeluaran.jumlah) return showToast("Keterangan dan jumlah wajib diisi");
+    try {
+      await axios.post(`${API}/kas/${className}/pengeluaran`, { ...formPengeluaran, jumlah: Number(formPengeluaran.jumlah) });
+      showToast("Pengeluaran tersimpan");
+      setFormPengeluaran({ tanggal: today(), keterangan: "", jumlah: "" });
+      loadPengeluaran(); loadSummary();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan pengeluaran")); }
+  };
+  const removePengeluaran = async (id) => {
+    if (!window.confirm("Hapus data pengeluaran ini?")) return;
+    try { await axios.delete(`${API}/kas/pengeluaran/${id}`); showToast("Data dihapus"); loadPengeluaran(); loadSummary(); }
+    catch { showToast("Gagal menghapus"); }
+  };
+  const saveTarget = async () => {
+    try { await axios.put(`${API}/kas/${className}/target`, { target: Number(targetInput) || 0 }); showToast("Target kas diperbarui"); loadTarget(); loadKurangBayar(); }
+    catch (err) { showToast(errMsg(err, "Gagal menyimpan target")); }
+  };
+
+  const gridData = students.length ? students : Array.from(new Set(allBayar.map((b) => b.student_name))).sort().map((name) => ({ id: name, name }));
+  const sumFor = (studentName, ym) => allBayar.filter((b) => b.student_name === studentName && b.bulan === ym).reduce((s, b) => s + b.jumlah, 0);
+
+  return <>
+    {canEdit && <PageTitle eyebrow="Keuangan Kelas" title="Uang Kas" description={`Kelas ${className}`} />}
+    <div className="stat-grid">
+      <Stat label="Total Pemasukan" value={rupiah(summary?.total_masuk)} change="Sepanjang periode" icon={Wallet} color="green" />
+      <Stat label="Total Pengeluaran" value={rupiah(summary?.total_keluar)} change="Sepanjang periode" icon={Wallet} color="rose" />
+      <Stat label="Sisa Saldo" value={rupiah(summary?.saldo)} change="Saat ini" icon={Wallet} color="blue" />
+    </div>
+    <section className="week-strip panel" style={{ marginTop: 18, marginBottom: 18 }}>
+      {canEdit && <button className={tab === "bayar" ? "selected" : ""} onClick={() => setTab("bayar")}><strong>Bayar Kas</strong></button>}
+      <button className={tab === "rekap" ? "selected" : ""} onClick={() => setTab("rekap")}><strong>Rekap</strong></button>
+      <button className={tab === "kurang" ? "selected" : ""} onClick={() => setTab("kurang")}><strong>Kurang Bayar</strong></button>
+      {canEdit && <button className={tab === "pengeluaran" ? "selected" : ""} onClick={() => setTab("pengeluaran")}><strong>Pengeluaran</strong></button>}
+    </section>
+
+    {tab === "bayar" && canEdit && <section className="panel">
+      <PanelHeading title="Bayar Kas" />
+      <div className="filter-grid" style={{ marginBottom: 16 }}>
+        <Select label="Siswa" value={formBayar.student_name} onChange={(v) => setFormBayar({ ...formBayar, student_name: v })} options={students.map((s) => s.name)} />
+        <label className="field">Bulan<input type="month" value={formBayar.bulan} onChange={(e) => setFormBayar({ ...formBayar, bulan: e.target.value })} /></label>
+        <label className="field">Jumlah (Rp)<input type="number" value={formBayar.jumlah} onChange={(e) => setFormBayar({ ...formBayar, jumlah: e.target.value })} placeholder="Contoh: 10000" /></label>
+        <label className="field">Tanggal Bayar<input type="date" value={formBayar.tanggal} onChange={(e) => setFormBayar({ ...formBayar, tanggal: e.target.value })} /></label>
+        <label className="field">Catatan (opsional)<input value={formBayar.catatan} onChange={(e) => setFormBayar({ ...formBayar, catatan: e.target.value })} /></label>
+        <button className="primary-button filter-button" onClick={submitBayar}><Save size={16} /> Simpan</button>
+      </div>
+      <label className="field" style={{ maxWidth: 220, marginBottom: 10 }}>Lihat bulan<input type="month" value={bulan} onChange={(e) => setBulan(e.target.value)} /></label>
+      <table className="table-print"><thead><tr><th>Tanggal</th><th>Nama Siswa</th><th>Jumlah</th><th>Catatan</th><th></th></tr></thead><tbody>
+        {!bayarList.length && <tr><td colSpan={5} className="text-center">Belum ada pembayaran bulan ini</td></tr>}
+        {bayarList.map((b) => <tr key={b.id}><td>{b.tanggal || "-"}</td><td>{b.student_name}</td><td className="text-center">{rupiah(b.jumlah)}</td><td>{b.catatan || "-"}</td><td><button className="icon-button" aria-label="Hapus" onClick={() => removeBayar(b.id)}><Trash2 size={15} /></button></td></tr>)}
+      </tbody></table>
+    </section>}
+
+    {tab === "rekap" && <section className="panel">
+      <PanelHeading title="Rekap Status Pembayaran" action={<span className="kas-target-badge">Target {rupiah(target)}/bulan</span>} />
+      <div className="kas-legend">
+        <span><i className="kas-dot lunas" /> Lunas</span>
+        <span><i className="kas-dot partial" /> Sudah cicil sebagian (angka = nominal masuk)</span>
+        <span><i className="kas-dot none" /> Belum bayar</span>
+      </div>
+      <div className="kas-target-edit">
+        <label className="field" style={{ maxWidth: 140 }}>Tahun ajaran<select value={tahunAjaran} onChange={(e) => setTahunAjaran(Number(e.target.value))}>{[tahunAjaran - 1, tahunAjaran, tahunAjaran + 1].map((y) => <option key={y} value={y}>{y}/{y + 1}</option>)}</select></label>
+        {canSetTarget && <><label className="field">Ubah target per bulan (Rp)<input type="number" value={targetInput} onChange={(e) => setTargetInput(e.target.value)} /></label><button className="secondary-button filter-button" onClick={saveTarget}><Save size={15} /> Simpan target</button></>}
+      </div>
+      <div className="table-wrap"><table className="kas-grid-table"><thead><tr><th className="kas-name-col">Nama Siswa</th>{months.map((m, i) => <th key={m.ym} className={i === 5 ? "kas-sem-divider" : ""}>{m.label}</th>)}</tr></thead><tbody>
+        {!gridData.length && <tr><td colSpan={13} className="text-center">Belum ada data siswa</td></tr>}
+        {gridData.map((s) => <tr key={s.id}><td className="kas-name-col">{s.name}</td>
+          {months.map((m, i) => { const paid = sumFor(s.name, m.ym); const cls = paid === 0 ? "none" : paid >= target && target > 0 ? "lunas" : "partial"; return <td key={m.ym} className={`kas-cell ${cls} ${i === 5 ? "kas-sem-divider" : ""}`}>{rb(paid)}</td>; })}
+        </tr>)}
+      </tbody></table></div>
+    </section>}
+
+    {tab === "kurang" && <section className="panel">
+      <PanelHeading title="Siswa yang Masih Kurang Bayar" />
+      <label className="field" style={{ maxWidth: 220, marginBottom: 16 }}>Pilih Bulan<input type="month" value={bulan} onChange={(e) => setBulan(e.target.value)} /></label>
+      {!kurangBayar.students.length && <p className="muted">Semua siswa sudah lunas bulan ini.</p>}
+      <div className="kas-kurang-list">
+        {kurangBayar.students.map((s) => <div className="kas-kurang-row" key={s.student_name}>
+          <div><div className="kas-kurang-name">{s.student_name}</div><div className="kas-kurang-note">{s.dibayar === 0 ? "(belum bayar sama sekali)" : `(sudah bayar ${rupiah(s.dibayar)})`}</div></div>
+          <div className="kas-kurang-amount">kurang {rupiah(s.kurang)}</div>
+        </div>)}
+      </div>
+    </section>}
+
+    {tab === "pengeluaran" && canEdit && <section className="panel">
+      <PanelHeading title="Catat Pengeluaran" />
+      <div className="filter-grid" style={{ marginBottom: 16 }}>
+        <label className="field">Tanggal<input type="date" value={formPengeluaran.tanggal} onChange={(e) => setFormPengeluaran({ ...formPengeluaran, tanggal: e.target.value })} /></label>
+        <label className="field">Keterangan<input value={formPengeluaran.keterangan} onChange={(e) => setFormPengeluaran({ ...formPengeluaran, keterangan: e.target.value })} placeholder="Contoh: Beli spidol" /></label>
+        <label className="field">Jumlah (Rp)<input type="number" value={formPengeluaran.jumlah} onChange={(e) => setFormPengeluaran({ ...formPengeluaran, jumlah: e.target.value })} /></label>
+        <button className="primary-button filter-button" onClick={submitPengeluaran}><Save size={16} /> Simpan</button>
+      </div>
+      <table className="table-print"><thead><tr><th>Tanggal</th><th>Keterangan</th><th>Jumlah</th><th></th></tr></thead><tbody>
+        {!pengeluaranList.length && <tr><td colSpan={4} className="text-center">Belum ada pengeluaran</td></tr>}
+        {pengeluaranList.map((p) => <tr key={p.id}><td>{p.tanggal}</td><td>{p.keterangan}</td><td className="text-center">{rupiah(p.jumlah)}</td><td><button className="icon-button" aria-label="Hapus" onClick={() => removePengeluaran(p.id)}><Trash2 size={15} /></button></td></tr>)}
+      </tbody></table>
+    </section>}
   </>;
 }
 
 const SEKRETARIS_NAV = [
   { id: "absen", label: "Absen", icon: CheckSquare },
+  { id: "uang-kas", label: "Uang Kas", icon: Wallet },
 ];
 
 function SekretarisApp({ user, showToast, toast, onLogout }) {
@@ -1548,6 +2588,7 @@ function SekretarisApp({ user, showToast, toast, onLogout }) {
   const className = user.secretary_class;
   return <MobileShell subtitle={`Sekretaris Kelas ${className}`} roleLabel={`Sekretaris ${className}`} user={user} navItems={SEKRETARIS_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
     {active === "absen" && <DailyAttendanceAbsen showToast={showToast} className={className} />}
+    {active === "uang-kas" && <UangKasPage showToast={showToast} className={className} canEdit />}
   </MobileShell>;
 }
 
@@ -1754,6 +2795,54 @@ function BukuIndukTranskrip({ showToast }) {
 function BukuIndukPage({ showToast, classes }) {
   const [tab, setTab] = useState("siswa");
   return <><PageTitle eyebrow="Tata Usaha" title="Buku Induk Digital" description="Biodata siswa dan transkrip nilai lengkap semester 1-6." /><div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 16 }}><button className="secondary-button" style={tab === "siswa" ? { background: "#176b4a", color: "#fff" } : {}} onClick={() => setTab("siswa")}><Users size={16} /> Data Siswa</button><button className="secondary-button" style={tab === "transkrip" ? { background: "#176b4a", color: "#fff" } : {}} onClick={() => setTab("transkrip")}><GraduationCap size={16} /> Transkrip Nilai</button></div>{tab === "siswa" && <BukuIndukSiswa showToast={showToast} classes={classes} />}{tab === "transkrip" && <BukuIndukTranskrip showToast={showToast} />}</>;
+}
+
+function BiodataGuruPage({ showToast }) {
+  const emptyBiodata = { nip: "", nuptk: "", tempat_lahir: "", tanggal_lahir: "", jenis_kelamin: "", agama: "", alamat: "", no_hp: "", pendidikan_terakhir: "", jurusan: "", status_kepegawaian: "", tmt: "" };
+  const [teachers, setTeachers] = useState([]);
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(null);
+  const load = () => axios.get(`${API}/masters`).then(({ data }) => setTeachers(data.teachers || [])).catch(() => showToast("Gagal memuat data guru"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const openEdit = (t) => {
+    setEditing(t.id);
+    setForm({ ...emptyBiodata, nip: t.nip || "", nuptk: t.nuptk || "", tempat_lahir: t.tempat_lahir || "", tanggal_lahir: t.tanggal_lahir || "", jenis_kelamin: t.jenis_kelamin || "", agama: t.agama || "", alamat: t.alamat || "", no_hp: t.no_hp || "", pendidikan_terakhir: t.pendidikan_terakhir || "", jurusan: t.jurusan || "", status_kepegawaian: t.status_kepegawaian || "", tmt: t.tmt || "" });
+  };
+  const closeForm = () => { setEditing(null); setForm(null); };
+  const save = async () => {
+    try { await axios.put(`${API}/teachers/${editing}/biodata`, form); showToast("Biodata guru tersimpan"); closeForm(); load(); }
+    catch (err) { showToast(errMsg(err, "Gagal menyimpan biodata")); }
+  };
+  const filtered = teachers.filter((t) => t.name.toLowerCase().includes(search.toLowerCase()));
+  return <>
+    <PageTitle eyebrow="Tata Usaha" title="Biodata Guru" description="Data kepegawaian lengkap tenaga pendidik." />
+    {!editing && <>
+      <label className="field full" style={{ marginBottom: 12 }}>Cari nama guru<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ketik nama..." /></label>
+      <div className="table-wrap"><table><thead><tr><th>Nama</th><th>NIP</th><th>Status</th><th>No. HP</th><th></th></tr></thead><tbody>
+        {filtered.map((t) => <tr key={t.id}><td>{t.name}</td><td>{t.nip || "-"}</td><td>{t.status_kepegawaian || "-"}</td><td>{t.no_hp || "-"}</td><td><button className="icon-button" aria-label="Edit biodata" onClick={() => openEdit(t)}><Pencil size={15} /></button></td></tr>)}
+        {!filtered.length && <tr><td colSpan="5" className="text-center">Tidak ada guru ditemukan</td></tr>}
+      </tbody></table></div>
+    </>}
+    {editing && form && <section className="panel">
+      <PanelHeading title={`Biodata: ${teachers.find((t) => t.id === editing)?.name || ""}`} action={<button className="icon-button" aria-label="Tutup" onClick={closeForm}><X size={18} /></button>} />
+      <div className="form-grid">
+        <label className="field">NIP<input value={form.nip} onChange={(e) => setForm({ ...form, nip: e.target.value })} /></label>
+        <label className="field">NUPTK<input value={form.nuptk} onChange={(e) => setForm({ ...form, nuptk: e.target.value })} /></label>
+        <label className="field">Tempat Lahir<input value={form.tempat_lahir} onChange={(e) => setForm({ ...form, tempat_lahir: e.target.value })} /></label>
+        <label className="field">Tanggal Lahir<input type="date" value={form.tanggal_lahir} onChange={(e) => setForm({ ...form, tanggal_lahir: e.target.value })} /></label>
+        <label className="field">Jenis Kelamin<select value={form.jenis_kelamin} onChange={(e) => setForm({ ...form, jenis_kelamin: e.target.value })}><option value="">- Pilih -</option><option value="Laki-laki">Laki-laki</option><option value="Perempuan">Perempuan</option></select></label>
+        <label className="field">Agama<input value={form.agama} onChange={(e) => setForm({ ...form, agama: e.target.value })} /></label>
+        <label className="field">No. HP<input value={form.no_hp} onChange={(e) => setForm({ ...form, no_hp: e.target.value })} /></label>
+        <label className="field">Pendidikan Terakhir<select value={form.pendidikan_terakhir} onChange={(e) => setForm({ ...form, pendidikan_terakhir: e.target.value })}><option value="">- Pilih -</option><option value="D3">D3</option><option value="S1">S1</option><option value="S2">S2</option><option value="S3">S3</option></select></label>
+        <label className="field">Jurusan / Program Studi<input value={form.jurusan} onChange={(e) => setForm({ ...form, jurusan: e.target.value })} /></label>
+        <label className="field">Status Kepegawaian<select value={form.status_kepegawaian} onChange={(e) => setForm({ ...form, status_kepegawaian: e.target.value })}><option value="">- Pilih -</option><option value="PNS">PNS</option><option value="PPPK">PPPK</option><option value="GTY">GTY</option><option value="GTT">GTT</option><option value="Honorer">Honorer</option></select></label>
+        <label className="field">TMT (Mulai Tugas)<input type="date" value={form.tmt} onChange={(e) => setForm({ ...form, tmt: e.target.value })} /></label>
+        <label className="field full">Alamat<textarea rows={2} value={form.alamat} onChange={(e) => setForm({ ...form, alamat: e.target.value })} /></label>
+      </div>
+      <button className="primary-button" style={{ marginTop: 14 }} onClick={save}><Save size={16} /> Simpan biodata</button>
+    </section>}
+  </>;
 }
 
 function ManajemenAkunPage({ showToast, classes }) {
@@ -2064,9 +3153,11 @@ const TU_NAV = [
   { id: "buku-induk", label: "Buku Induk", icon: BookOpen },
   { id: "kelola-siswa", label: "Kelola Siswa", icon: Users },
   { id: "kelola-kelas", label: "Kelola Kelas", icon: School },
+  { id: "biodata-guru", label: "Biodata Guru", icon: IdCard },
   { id: "manajemen-akun", label: "Manajemen Akun", icon: UserCog },
   { id: "persuratan", label: "Persuratan", icon: FileText },
   { id: "rekap-absensi-siswa", label: "Rekap Absensi Siswa", icon: BarChart3 },
+  { id: "kartu-ujian", label: "Kartu Ujian CBT", icon: ClipboardCheck },
   { id: "laporan", label: "Laporan", icon: FileDown },
 ];
 
@@ -2077,18 +3168,32 @@ function TuApp({ user, showToast, toast, onLogout, masters, addMaster, updateMas
     {active === "buku-induk" && <BukuIndukPage showToast={showToast} classes={classes} />}
     {active === "kelola-siswa" && masters && <Master title="Kelola Siswa" icon={Users} rows={masters.students} addLabel="Tambah siswa" onAdd={addMaster("students", "Data siswa diperbarui")} onUpdate={updateMaster("students", "Data siswa diperbarui")} onDelete={deleteMaster("students", "Data siswa dihapus")} classes={classes} onImport={importMaster("students", "Siswa")} />}
     {active === "kelola-kelas" && masters && <KelasManager rows={masters.classes} showToast={showToast} onReload={onReloadMasters} />}
+    {active === "biodata-guru" && <BiodataGuruPage showToast={showToast} />}
     {active === "manajemen-akun" && <ManajemenAkunPage showToast={showToast} classes={classes} />}
     {active === "persuratan" && <PersuratanPage showToast={showToast} />}
     {active === "rekap-absensi-siswa" && <DailyAttendanceRekap showToast={showToast} classes={classes} />}
+    {active === "kartu-ujian" && <KartuUjianPage showToast={showToast} />}
     {active === "laporan" && <LaporanPage showToast={showToast} />}
   </MobileShell>;
 }
 
 const SISWA_NAV = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "biodata", label: "Biodata Saya", icon: UserRound },
   { id: "kartu", label: "Kartu Pelajar", icon: IdCard },
   { id: "nilai", label: "Transkrip Nilai", icon: GraduationCap },
+  { id: "cbt", label: "Ujian CBT", icon: ClipboardCheck },
 ];
+
+function SiswaCBTInfo() {
+  return <><PageTitle eyebrow="Siswa" title="Ujian CBT" description="Ujian online dikerjakan di halaman terpisah, bukan di sini." />
+    <section className="panel" style={{ textAlign: "center", padding: "40px 24px" }}>
+      <ClipboardCheck size={40} color="#8a9690" style={{ marginBottom: 14 }} />
+      <p style={{ maxWidth: 420, margin: "0 auto 20px", color: "#5c675f" }}>Untuk mengerjakan ujian CBT, gunakan <strong>username & password kartu ujian</strong> yang diberikan oleh Tata Usaha atau panitia ujian &mdash; bukan akun portal siswa ini.</p>
+      <a className="primary-button" href="/cbt" target="_blank" rel="noreferrer" style={{ display: "inline-flex", textDecoration: "none" }}><ClipboardCheck size={16} /> Buka Halaman Ujian CBT</a>
+    </section>
+  </>;
+}
 
 function SiswaBiodata({ showToast, studentId }) {
   const [data, setData] = useState(null);
@@ -2158,13 +3263,339 @@ function SiswaNilai({ showToast, studentName }) {
   return <><PageTitle eyebrow="Siswa" title="Transkrip Nilai" description="Nilai akhir per semester." />{[1, 2, 3, 4, 5, 6].map((sem) => { const d = semesterData[sem]; return <section className="panel" key={sem} style={{ marginBottom: 14 }}><PanelHeading title={`Semester ${sem}`} /><div className="table-wrap"><table><thead><tr><th>Mata Pelajaran</th><th>Nilai</th></tr></thead><tbody>{!(d?.subjects || []).length && <tr><td colSpan={2}>Belum ada data</td></tr>}{(d?.subjects || []).map((s, i) => <tr key={i}><td>{s.subject}</td><td>{s.nilai}</td></tr>)}</tbody></table></div></section>; })}</>;
 }
 
+function SiswaDashboard({ showToast, user }) {
+  const [data, setData] = useState(null);
+  useEffect(() => { axios.get(`${API}/siswa/dashboard`).then(({ data }) => setData(data)).catch(() => showToast("Gagal memuat dashboard")); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const p = data?.presensi_bulan_ini || { H: 0, S: 0, I: 0, A: 0 };
+  return <>
+    <PageTitle eyebrow="Siswa" title={`Halo, ${(user.name || "").split(" ")[0]}`} description={data ? `Kelas ${data.class_name} · Ringkasan bulan ini` : "Memuat data..."} />
+    <div className="stat-grid">
+      <Stat label="Hadir" value={p.H} change="Bulan ini" icon={Check} color="green" />
+      <Stat label="Sakit" value={p.S} change="Bulan ini" icon={Thermometer} color="amber" />
+      <Stat label="Izin" value={p.I} change="Bulan ini" icon={DoorOpen} color="blue" />
+      <Stat label="Alfa" value={p.A} change="Bulan ini" icon={X} color="rose" />
+    </div>
+    {data?.class_name && <section className="panel" style={{ marginTop: 18 }}>
+      <PanelHeading title="Uang Kas Kelas" subtitle="Transparansi pemasukan, pengeluaran, dan saldo kelasmu" />
+      <UangKasPage showToast={showToast} className={data.class_name} canEdit={false} />
+    </section>}
+  </>;
+}
+
 function SiswaApp({ user, showToast, toast, onLogout }) {
-  const [active, setActive] = useState("biodata");
-  return <MobileShell subtitle="Portal Siswa" roleLabel="Siswa" user={user} navItems={SISWA_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
+  const [active, setActive] = useState("dashboard");
+  const [jabatan, setJabatan] = useState(null); // null = belum dimuat, "" = tidak ada jabatan, "Sekretaris" | "Bendahara"
+  const [className, setClassName] = useState(null);
+
+  useEffect(() => {
+    axios.get(`${API}/siswa/dashboard`)
+      .then(({ data }) => { setClassName(data.class_name || null); })
+      .catch(() => {});
+    axios.get(`${API}/jabatan-kelas/saya`)
+      .then(({ data }) => setJabatan(data.jabatan || ""))
+      .catch(() => setJabatan(""));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isSekretaris = jabatan === "Sekretaris";
+  const isBendahara = jabatan === "Bendahara";
+  const hasJabatan = isSekretaris || isBendahara;
+
+  const siswaNav = [
+    ...SISWA_NAV,
+    ...(hasJabatan ? [{ id: "absensi-kelas", label: isSekretaris ? "Absen Kelas" : "Absen Kelas", icon: ClipboardList }] : []),
+    ...(hasJabatan ? [{ id: "uang-kas", label: "Uang Kas", icon: Wallet }] : []),
+  ];
+
+  return <MobileShell subtitle="Portal Siswa" roleLabel={hasJabatan ? `Siswa · ${jabatan}` : "Siswa"} user={user} navItems={siswaNav} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
+    {active === "dashboard" && <SiswaDashboard showToast={showToast} user={user} />}
     {active === "biodata" && <SiswaBiodata showToast={showToast} studentId={user.student_id} />}
     {active === "kartu" && <KartuPelajarPage showToast={showToast} studentId={user.student_id} />}
     {active === "nilai" && <SiswaNilai showToast={showToast} studentName={user.name} />}
+    {active === "cbt" && <SiswaCBTInfo />}
+    {active === "absensi-kelas" && hasJabatan && className && <DailyAttendanceAbsen showToast={showToast} className={className} canEditAlways={isSekretaris} />}
+    {active === "uang-kas" && hasJabatan && className && <UangKasPage showToast={showToast} className={className} canEdit={isSekretaris || isBendahara} />}
   </MobileShell>;
 }
 
-export default App;
+// ===================== KEPALA SEKOLAH =====================
+
+function KepsekAccountsAdmin({ showToast }) {
+  const [accounts, setAccounts] = useState([]);
+  const [form, setForm] = useState({ name: "", username: "", password: "" });
+  const [editing, setEditing] = useState(null);
+  const load = () => axios.get(`${API}/kepsek-accounts`).then(({ data }) => setAccounts(data)).catch(() => showToast("Gagal memuat akun kepala sekolah"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const submit = async () => {
+    if (!form.name.trim()) return showToast("Nama wajib diisi");
+    try {
+      if (editing) {
+        await axios.put(`${API}/kepsek-accounts/${editing}`, { name: form.name });
+        if (form.password) await axios.put(`${API}/kepsek-accounts/${editing}/password`, { password: form.password });
+        showToast("Akun kepala sekolah diperbarui");
+      } else {
+        if (!form.username.trim() || form.password.length < 6) return showToast("Username & password (min 6 karakter) wajib diisi");
+        await axios.post(`${API}/kepsek-accounts`, form);
+        showToast("Akun kepala sekolah berhasil dibuat");
+      }
+      setForm({ name: "", username: "", password: "" }); setEditing(null); load();
+    } catch (err) { showToast(errMsg(err, "Gagal menyimpan akun")); }
+  };
+  const editAcc = (a) => { setEditing(a.id); setForm({ name: a.name, username: a.username, password: "" }); };
+  const remove = async (id) => {
+    if (!window.confirm("Hapus akun kepala sekolah ini?")) return;
+    try { await axios.delete(`${API}/kepsek-accounts/${id}`); showToast("Akun dihapus"); load(); } catch { showToast("Gagal menghapus akun"); }
+  };
+  return <>
+    <PageTitle eyebrow="Administrasi" title="Akun Kepala Sekolah" description="Kepala sekolah dapat melihat seluruh data sekolah secara read-only." />
+    <section className="panel filter-grid" style={{ marginBottom: 18 }}>
+      <label className="field">Nama<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Contoh: Drs. Ahmad Fauzi, M.Pd." /></label>
+      <label className="field">Username{editing && <span style={{ fontWeight: 400, opacity: 0.7 }}> (tidak bisa diubah)</span>}<input value={form.username} disabled={!!editing} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="username login" /></label>
+      <label className="field">{editing ? "Password baru (opsional)" : "Password"}<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "Kosongkan jika tidak diganti" : "min 6 karakter"} /></label>
+      <button className="primary-button filter-button" onClick={submit}><Save size={16} /> {editing ? "Simpan perubahan" : "Buat akun"}</button>
+      {editing && <button className="secondary-button" onClick={() => { setEditing(null); setForm({ name: "", username: "", password: "" }); }}><X size={16} /> Batal</button>}
+    </section>
+    <section className="panel">
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama</th><th>Username</th><th>Akses</th><th></th></tr></thead>
+          <tbody>
+            {accounts.map((a) => <tr key={a.id}>
+              <td>{a.name}</td><td>{a.username}</td>
+              <td><span style={{ fontSize: 11, background: "#fef9c3", color: "#854d0e", padding: "2px 8px", borderRadius: 12 }}>Read-only</span></td>
+              <td><div style={{ display: "flex", gap: 6 }}><button className="icon-button" onClick={() => editAcc(a)}><Pencil size={16} /></button><button className="icon-button" onClick={() => remove(a.id)}><Trash2 size={16} /></button></div></td>
+            </tr>)}
+            {!accounts.length && <tr><td colSpan="4">Belum ada akun kepala sekolah.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+function KepsekDashboard({ showToast, classes }) {
+  const [stats, setStats] = useState(null);
+  const [absenRekap, setAbsenRekap] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    Promise.all([
+      axios.get(`${API}/dashboard/stats`),
+      axios.get(`${API}/daily-attendance/summary`),
+    ]).then(([statsRes, absenRes]) => {
+      setStats(statsRes.data);
+      setAbsenRekap(absenRes.data || []);
+    }).catch(() => showToast("Gagal memuat data dashboard"))
+    .finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (loading) return <div className="session-loading">Memuat data...</div>;
+  return <>
+    <PageTitle eyebrow="Kepala Sekolah" title="Dashboard Sekolah" description="Ringkasan kondisi sekolah hari ini. Semua data bersifat read-only." />
+    {stats && <div className="stat-grid">
+      <Stat label="Total Siswa" value={stats.total_students ?? "-"} icon={Users} color="green" change="Terdaftar aktif" />
+      <Stat label="Total Guru" value={stats.total_teachers ?? "-"} icon={UserRound} color="blue" change="Tenaga pengajar" />
+      <Stat label="Total Kelas" value={stats.total_classes ?? "-"} icon={School} color="amber" change="Kelas aktif" />
+      <Stat label="Total Mapel" value={stats.total_subjects ?? "-"} icon={BookOpen} color="rose" change="Mata pelajaran" />
+    </div>}
+    {absenRekap.length > 0 && <section className="panel" style={{ marginTop: 18 }}>
+      <PanelHeading title="Rekap Absensi Hari Ini" subtitle="Seluruh kelas" />
+      <div className="table-wrap">
+        <table><thead><tr><th>Kelas</th><th>Hadir</th><th>Sakit</th><th>Izin</th><th>Alfa</th></tr></thead>
+          <tbody>{absenRekap.map((r) => <tr key={r.class_name}>
+            <td><strong>{r.class_name}</strong></td>
+            <td className="text-center">{r.hadir ?? "-"}</td>
+            <td className="text-center">{r.sakit ?? "-"}</td>
+            <td className="text-center">{r.izin ?? "-"}</td>
+            <td className="text-center">{r.alfa ?? "-"}</td>
+          </tr>)}
+          </tbody>
+        </table>
+      </div>
+    </section>}
+  </>;
+}
+
+const KEPSEK_NAV = [
+  { id: "dashboard",        label: "Dashboard",           icon: LayoutDashboard },
+  { id: "rekap-absensi",    label: "Rekap Absensi",       icon: BarChart3 },
+  { id: "rekap-nilai",      label: "Rekap Nilai",         icon: GraduationCap },
+  { id: "pelanggaran",      label: "Laporan Pelanggaran", icon: AlertTriangle },
+  { id: "data-guru",        label: "Data Guru & Jadwal",  icon: UserRound },
+  { id: "statistik",        label: "Statistik Sekolah",   icon: School },
+];
+
+function KepsekApp({ user, showToast, toast, onLogout }) {
+  const [active, setActive] = useState("dashboard");
+  const [masters, setMasters] = useState(null);
+  useEffect(() => {
+    axios.get(`${API}/masters`).then(({ data }) => setMasters(data)).catch(() => showToast("Gagal memuat data"));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const classes = (masters?.classes || []).map((c) => c.name);
+  const subjects = (masters?.subjects || []).map((s) => s.name);
+  return <MobileShell subtitle="Portal Kepala Sekolah" roleLabel="Kepala Sekolah" user={user} navItems={KEPSEK_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
+    {active === "dashboard"     && <KepsekDashboard showToast={showToast} classes={classes} />}
+    {active === "rekap-absensi" && <DailyAttendanceRekap showToast={showToast} classes={classes} readOnly />}
+    {active === "rekap-nilai"   && masters && <KepsekNilaiRekap showToast={showToast} classes={classes} subjects={subjects} />}
+    {active === "pelanggaran"   && <PelanggaranSiswaPage showToast={showToast} readOnly />}
+    {active === "data-guru"     && masters && <KepsekDataGuru showToast={showToast} teachers={masters.teachers} />}
+    {active === "statistik"     && <KepsekStatistik showToast={showToast} classes={classes} />}
+  </MobileShell>;
+}
+
+function KepsekNilaiRekap({ showToast, classes, subjects }) {
+  const [filterClass, setFilterClass] = useState(classes[0] || "");
+  const [filterSubject, setFilterSubject] = useState(subjects[0] || "");
+  const [filterType, setFilterType] = useState(GRADE_TYPES[0]);
+  const [rows, setRows] = useState([]);
+  const load = async () => {
+    if (!filterClass || !filterSubject) return;
+    try {
+      const { data } = await axios.get(`${API}/grades`, { params: { class_name: filterClass, subject: filterSubject, assessment_type: filterType } });
+      setRows(data.entries || []);
+    } catch { showToast("Gagal memuat data nilai"); }
+  };
+  useEffect(() => { load(); }, [filterClass, filterSubject, filterType]); // eslint-disable-line react-hooks/exhaustive-deps
+  const avg = rows.length ? (rows.reduce((a, r) => a + r.score, 0) / rows.length).toFixed(1) : "-";
+  return <>
+    <PageTitle eyebrow="Kepala Sekolah" title="Rekap Nilai Siswa" description="Data nilai bersifat read-only." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Kelas<select value={filterClass} onChange={(e) => setFilterClass(e.target.value)}>{classes.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
+      <label className="field">Mata Pelajaran<select value={filterSubject} onChange={(e) => setFilterSubject(e.target.value)}>{subjects.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
+      <label className="field">Jenis Penilaian<select value={filterType} onChange={(e) => setFilterType(e.target.value)}>{GRADE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></label>
+      <button className="secondary-button filter-button" onClick={load}><Search size={16} /> Tampilkan</button>
+    </div>
+    <section className="panel">
+      <PanelHeading title={`${filterSubject} · Kelas ${filterClass}`} subtitle={`${rows.length} siswa · Rata-rata: ${avg}`} />
+      <div className="table-wrap">
+        <table><thead><tr><th>No</th><th>Nama Siswa</th><th>Nilai</th><th>Predikat</th></tr></thead>
+          <tbody>
+            {rows.map((r, i) => <tr key={i}>
+              <td>{i + 1}</td><td>{r.student}</td>
+              <td className="text-center"><strong>{r.score}</strong></td>
+              <td><span className={`grade-pill ${r.score >= 85 ? "excellent" : r.score >= 75 ? "good" : "needs"}`}>{r.score >= 85 ? "Sangat baik" : r.score >= 75 ? "Baik" : "Perlu bimbingan"}</span></td>
+            </tr>)}
+            {!rows.length && <tr><td colSpan="4">Belum ada data nilai.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+function KepsekDataGuru({ showToast, teachers }) {
+  const [schedules, setSchedules] = useState([]);
+  const [selectedTeacher, setSelectedTeacher] = useState(teachers[0]?.name || "");
+  useEffect(() => {
+    if (!selectedTeacher) return;
+    axios.get(`${API}/schedules`, { params: { teacher: selectedTeacher } })
+      .then(({ data }) => setSchedules(data))
+      .catch(() => showToast("Gagal memuat jadwal guru"));
+  }, [selectedTeacher]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <>
+    <PageTitle eyebrow="Kepala Sekolah" title="Data Guru & Jadwal" description="Lihat daftar guru dan jadwal mengajar. Read-only." />
+    <section className="panel" style={{ marginBottom: 16 }}>
+      <PanelHeading title="Daftar Guru" subtitle={`${teachers.length} guru terdaftar`} />
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama</th><th>NIP</th><th>Mapel</th><th>Wali Kelas</th></tr></thead>
+          <tbody>
+            {teachers.map((t) => <tr key={t.id}>
+              <td><strong>{t.name}</strong></td>
+              <td>{t.nip || "-"}</td>
+              <td>{t.subject || "-"}</td>
+              <td>{t.homeroom_class ? <span style={{ fontSize: 11, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>{t.homeroom_class}</span> : "-"}</td>
+            </tr>)}
+            {!teachers.length && <tr><td colSpan="4">Belum ada data guru.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section className="panel">
+      <PanelHeading title="Jadwal Mengajar" subtitle="Pilih guru untuk melihat jadwalnya" />
+      <div className="filter-grid" style={{ marginBottom: 14 }}>
+        <label className="field">Pilih Guru<select value={selectedTeacher} onChange={(e) => setSelectedTeacher(e.target.value)}>
+          {teachers.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+        </select></label>
+      </div>
+      <div className="table-wrap">
+        <table><thead><tr><th>Hari</th><th>Jam</th><th>Kelas</th><th>Mata Pelajaran</th></tr></thead>
+          <tbody>
+            {schedules.map((s) => <tr key={s.id}>
+              <td>{s.day}</td>
+              <td>{s.start_time} – {s.end_time}</td>
+              <td>{s.class_name}</td>
+              <td>{s.subject}</td>
+            </tr>)}
+            {!schedules.length && <tr><td colSpan="4">Belum ada jadwal untuk guru ini.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+function KepsekStatistik({ showToast, classes }) {
+  const [bulan, setBulan] = useState(today().slice(0, 7));
+  const [absenData, setAbsenData] = useState([]);
+  const [pelanggaranData, setPelanggaranData] = useState({ total: 0, terbanyak: [] });
+  const load = async () => {
+    try {
+      const [absenRes, pelRes] = await Promise.all([
+        axios.get(`${API}/daily-attendance/summary`, { params: { bulan } }),
+        axios.get(`${API}/pelanggaran-siswa/statistik`, { params: { bulan } }),
+      ]);
+      setAbsenData(absenRes.data || []);
+      setPelanggaranData(pelRes.data || { total: 0, terbanyak: [] });
+    } catch { showToast("Gagal memuat statistik"); }
+  };
+  useEffect(() => { load(); }, [bulan]); // eslint-disable-line react-hooks/exhaustive-deps
+  const totalHadir = absenData.reduce((a, r) => a + (r.hadir || 0), 0);
+  const totalAlfa = absenData.reduce((a, r) => a + (r.alfa || 0), 0);
+  const totalSiswa = absenData.reduce((a, r) => a + (r.hadir || 0) + (r.sakit || 0) + (r.izin || 0) + (r.alfa || 0), 0);
+  const pctHadir = totalSiswa ? ((totalHadir / totalSiswa) * 100).toFixed(1) : "-";
+  return <>
+    <PageTitle eyebrow="Kepala Sekolah" title="Statistik Sekolah" description="Ringkasan kehadiran dan pelanggaran siswa per bulan." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Bulan<input type="month" value={bulan} onChange={(e) => setBulan(e.target.value)} /></label>
+      <button className="secondary-button filter-button" onClick={load}><Search size={16} /> Tampilkan</button>
+    </div>
+    <div className="stat-grid">
+      <Stat label="% Kehadiran" value={`${pctHadir}%`} icon={Check} color="green" change={`Bulan ${bulan}`} />
+      <Stat label="Total Alfa" value={totalAlfa} icon={X} color="rose" change="Tidak hadir tanpa ket." />
+      <Stat label="Total Pelanggaran" value={pelanggaranData.total} icon={AlertTriangle} color="amber" change={`Bulan ${bulan}`} />
+    </div>
+    {absenData.length > 0 && <section className="panel" style={{ marginTop: 18 }}>
+      <PanelHeading title="Kehadiran per Kelas" subtitle={`Bulan ${bulan}`} />
+      <div className="table-wrap">
+        <table><thead><tr><th>Kelas</th><th>Hadir</th><th>Sakit</th><th>Izin</th><th>Alfa</th><th>% Hadir</th></tr></thead>
+          <tbody>{absenData.map((r) => {
+            const total = (r.hadir || 0) + (r.sakit || 0) + (r.izin || 0) + (r.alfa || 0);
+            const pct = total ? ((r.hadir || 0) / total * 100).toFixed(1) : "-";
+            return <tr key={r.class_name}>
+              <td><strong>{r.class_name}</strong></td>
+              <td className="text-center">{r.hadir ?? 0}</td>
+              <td className="text-center">{r.sakit ?? 0}</td>
+              <td className="text-center">{r.izin ?? 0}</td>
+              <td className="text-center">{r.alfa ?? 0}</td>
+              <td className="text-center"><span style={{ fontWeight: 700, color: Number(pct) >= 85 ? "#166534" : "#dc2626" }}>{pct}%</span></td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </section>}
+    {pelanggaranData.terbanyak?.length > 0 && <section className="panel" style={{ marginTop: 18 }}>
+      <PanelHeading title="Siswa Pelanggaran Terbanyak" subtitle={`Bulan ${bulan}`} />
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama Siswa</th><th>Kelas</th><th>Jumlah Pelanggaran</th></tr></thead>
+          <tbody>{pelanggaranData.terbanyak.map((p, i) => <tr key={i}>
+            <td>{p.student_name}</td>
+            <td>{p.class_name}</td>
+            <td className="text-center"><strong>{p.total}</strong></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </section>}
+  </>;
+}
+
+function Root() {
+  return window.location.pathname.startsWith("/cbt") ? <CBTPortal /> : <App />;
+}
+
+export default Root;
