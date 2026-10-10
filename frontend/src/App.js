@@ -13,13 +13,12 @@ import {
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "jadwal", label: "Jadwal Mengajar", icon: CalendarDays },
-  { id: "absensi", label: "Absensi Siswa", icon: CheckSquare },
-  { id: "nilai", label: "Nilai Siswa", icon: GraduationCap },
-  { id: "jurnal", label: "Jurnal Mengajar", icon: BookMarked },
-  { id: "rekap", label: "Rekap & Cetak", icon: Printer },
-  { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
-  { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
+  { id: "jadwal",   label: "Jadwal Mengajar", icon: CalendarDays },
+  { id: "absensi",  label: "Absensi Siswa",   icon: CheckSquare },
+  { id: "nilai",    label: "Nilai Siswa",      icon: GraduationCap },
+  { id: "jurnal",   label: "Jurnal Mengajar",  icon: BookMarked },
+  { id: "rekap",    label: "Rekap & Cetak",    icon: Printer },
+  // Menu Bank Soal & Ujian CBT dipindah ke akun Panitia CBT
 ];
 const ADMIN_NAV_GROUPS = [
   { label: "Data Master", icon: School, items: [
@@ -49,11 +48,6 @@ const ADMIN_NAV_GROUPS = [
     { id: "akun-tu", label: "Akun Tata Usaha", icon: Contact },
   ] },
   { label: "CBT", icon: ClipboardCheck, items: [
-    { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
-    { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
-    { id: "kartu-ujian", label: "Kartu Ujian", icon: IdCard },
-    { id: "monitor-cbt", label: "Pengawasan Ujian", icon: ShieldCheck },
-    { id: "hasil-angkatan", label: "Hasil per Angkatan", icon: BarChart3 },
     { id: "akun-cbt", label: "Akun Panitia CBT", icon: Contact },
   ] },
   { label: "Kepala Sekolah", icon: School, items: [
@@ -98,262 +92,6 @@ function compressImage(file, maxWidth, maxHeight, quality) {
     reader.onerror = () => reject(new Error("Gagal membaca file"));
     reader.readAsDataURL(file);
   });
-}
-
-function CBTPortal() {
-  const [stage, setStage] = useState("login"); // login | daftar | siap | ujian | selesai-mapel | semua-selesai
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [token, setToken] = useState(() => sessionStorage.getItem("cbt_token") || "");
-  const [studentName, setStudentName] = useState("");
-  const [kegiatanInfo, setKegiatanInfo] = useState(null);
-  const [daftarUjian, setDaftarUjian] = useState([]);
-  const [ujianAktif, setUjianAktif] = useState(null);
-  const [soalList, setSoalList] = useState([]);
-  const [jawaban, setJawaban] = useState({});
-  const [idx, setIdx] = useState(0);
-  const [sisaDetik, setSisaDetik] = useState(0);
-  const [deadline, setDeadline] = useState(0); // timestamp absolut akhir ujian
-  const [violations, setViolations] = useState(0);
-  const [warning, setWarning] = useState("");
-  const [nilaiSelesai, setNilaiSelesai] = useState(null);
-  const examRef = useRef(null);
-  const submittedRef = useRef(false);
-  const lastViolationRef = useRef(0);
-
-  const cbtApi = useMemo(() => {
-    const instance = axios.create({ baseURL: API });
-    instance.interceptors.request.use((cfg) => { if (token) cfg.headers.Authorization = `Bearer ${token}`; return cfg; });
-    return instance;
-  }, [token]);
-
-  const muatDaftarUjian = async () => {
-    try { const { data } = await cbtApi.get("/cbt/daftar-ujian"); setDaftarUjian(data); setStage("daftar"); }
-    catch (err) { setError(err?.response?.data?.detail || "Gagal memuat daftar ujian"); }
-  };
-
-  // Pulihkan sesi otomatis jika token masih ada (misal: siswa refresh halaman di tengah ujian)
-  useEffect(() => {
-    const savedToken = sessionStorage.getItem("cbt_token");
-    if (savedToken && stage === "login") {
-      muatDaftarUjian();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const login = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      const { data } = await cbtApi.post("/cbt/login", { username, password });
-      sessionStorage.setItem("cbt_token", data.access_token);
-      setToken(data.access_token);
-      setStudentName(data.student_name);
-      setKegiatanInfo(data.kegiatan);
-      const daftar = await axios.get(`${API}/cbt/daftar-ujian`, { headers: { Authorization: `Bearer ${data.access_token}` } });
-      setDaftarUjian(daftar.data);
-      setStage("daftar");
-    } catch (err) { setError(err?.response?.data?.detail || "Username atau password salah"); }
-    finally { setLoading(false); }
-  };
-
-  const pilihMapel = (u) => { if (u.selesai) return; setUjianAktif(u); setStage("siap"); setError(""); };
-
-  const mulaiUjian = async () => {
-    setLoading(true); setError("");
-    submittedRef.current = false;
-    try {
-      const { data } = await cbtApi.get("/cbt/soal-ujian", { params: { ujian_id: ujianAktif.id } });
-      setSoalList(data.soal);
-      setJawaban(data.jawaban_tersimpan || {});
-      setSisaDetik(data.sisa_detik);
-      setDeadline(Date.now() + data.sisa_detik * 1000); // simpan batas waktu absolut
-      setIdx(0);
-      setStage("ujian");
-      if (examRef.current?.requestFullscreen) examRef.current.requestFullscreen().catch(() => {});
-    } catch (err) { setError(err?.response?.data?.detail || "Gagal memuat soal ujian"); }
-    finally { setLoading(false); }
-  };
-
-  const playAlarm = () => {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "square"; osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.35, ctx.currentTime);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.7);
-    } catch { /* abaikan kalau browser blokir audio */ }
-  };
-  const logEvent = (tipe) => { cbtApi.post("/cbt/event", { tipe }).catch(() => {}); };
-  const catat = (tipe, pesan) => {
-    const now = Date.now();
-    if (now - lastViolationRef.current < 1500) return; // debounce: abaikan event ganda dalam 1.5 detik
-    lastViolationRef.current = now;
-    playAlarm();
-    setViolations((v) => v + 1);
-    if (pesan) setWarning(pesan);
-    logEvent(tipe);
-  };
-
-  useEffect(() => {
-    if (stage !== "ujian") return;
-    const onVis = () => { if (document.hidden) catat("tab_switch", "Anda terdeteksi berpindah tab/aplikasi lain. Pelanggaran dicatat."); };
-    const onBlur = () => catat("blur", "");
-    const onFsChange = () => { if (!document.fullscreenElement) catat("fullscreen_exit", "Anda keluar dari mode layar penuh. Pelanggaran dicatat."); };
-    const onContext = (e) => e.preventDefault();
-    const onCopy = (e) => { e.preventDefault(); logEvent("copy_paste"); };
-    const onBeforeUnload = (e) => { if (!submittedRef.current) { e.preventDefault(); e.returnValue = ""; } };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("blur", onBlur);
-    document.addEventListener("fullscreenchange", onFsChange);
-    document.addEventListener("contextmenu", onContext);
-    document.addEventListener("copy", onCopy);
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => {
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("blur", onBlur);
-      document.removeEventListener("fullscreenchange", onFsChange);
-      document.removeEventListener("contextmenu", onContext);
-      document.removeEventListener("copy", onCopy);
-      window.removeEventListener("beforeunload", onBeforeUnload);
-    };
-  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (stage !== "ujian" || !deadline) return;
-    const tick = () => {
-      const sisa = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-      setSisaDetik(sisa);
-      if (sisa <= 0) selesaiUjian();
-    };
-    tick();
-    const t = setInterval(tick, 1000);
-    return () => clearInterval(t);
-  }, [stage, deadline]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const pilihJawaban = (soalId, index) => {
-    setJawaban((prev) => ({ ...prev, [soalId]: index }));
-    cbtApi.post("/cbt/jawab", { ujian_id: ujianAktif.id, soal_id: soalId, jawaban: index }).catch(() => {});
-  };
-
-  const selesaiUjian = async () => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-    try {
-      const { data } = await cbtApi.post("/cbt/selesai", {}, { params: { ujian_id: ujianAktif.id } });
-      setNilaiSelesai(data.nilai);
-    } catch { setNilaiSelesai(null); }
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    setStage("selesai-mapel");
-  };
-
-  const kembaliKeDaftar = async () => {
-    setUjianAktif(null); setSoalList([]); setJawaban({});
-    try { const { data } = await cbtApi.get("/cbt/daftar-ujian"); setDaftarUjian(data);
-      if (data.every((u) => u.selesai)) { sessionStorage.removeItem("cbt_token"); setStage("semua-selesai"); }
-      else setStage("daftar");
-    } catch { setStage("daftar"); }
-  };
-
-  const fmtTime = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-  const terjawab = Object.keys(jawaban).length;
-
-  return <div className="cbt-shell" ref={examRef}>
-    <div className="cbt-bg" />
-    {stage === "login" && <div className="cbt-center">
-      <form className="cbt-login-card" onSubmit={login}>
-        <div className="cbt-logo-dot">CBT</div>
-        <h1>Ujian Berbasis Komputer</h1>
-        <p>Masuk menggunakan kartu ujian yang diberikan oleh Tata Usaha.</p>
-        <label>Username<input data-testid="cbt-username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus /></label>
-        <label>Password<input data-testid="cbt-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-        {error && <div className="cbt-error">{error}</div>}
-        <button type="submit" className="cbt-primary-btn" disabled={loading}>{loading ? "Memeriksa..." : "Masuk Ujian"}</button>
-      </form>
-    </div>}
-
-    {stage === "daftar" && <div className="cbt-center">
-      <div className="cbt-login-card" style={{ maxWidth: 480 }}>
-        <div className="cbt-logo-dot">{studentName ? studentName[0] : "S"}</div>
-        <h1>{kegiatanInfo?.nama}</h1>
-        <p>Halo {studentName}, pilih mata pelajaran yang mau dikerjakan.</p>
-        <div className="cbt-mapel-list">
-          {daftarUjian.map((u) => <button key={u.id} className={`cbt-mapel-item ${u.selesai ? "done" : ""}`} disabled={u.selesai} onClick={() => pilihMapel(u)}>
-            <span>{u.mapel}</span>
-            {u.selesai ? <span className="cbt-mapel-badge done">Selesai ({u.nilai})</span> : <span className="cbt-mapel-badge">Belum dikerjakan</span>}
-          </button>)}
-          {!daftarUjian.length && <p className="cbt-muted-note">Belum ada mapel yang tersedia.</p>}
-        </div>
-      </div>
-    </div>}
-
-    {stage === "siap" && <div className="cbt-center">
-      <div className="cbt-login-card">
-        <div className="cbt-logo-dot">✓</div>
-        <h1>{ujianAktif?.mapel}</h1>
-        <p>{kegiatanInfo?.nama} · {kegiatanInfo?.durasi_menit} menit · Peserta: {studentName}</p>
-        <ul className="cbt-rules">
-          <li>Ujian akan berjalan dalam mode layar penuh.</li>
-          <li>Jangan berpindah tab, aplikasi lain, atau keluar dari layar penuh — akan tercatat sebagai pelanggaran dan berbunyi.</li>
-          <li>Klik kanan dan copy-paste dinonaktifkan selama ujian.</li>
-          <li>Waktu berjalan otomatis dan ujian akan terkirim sendiri saat waktu habis.</li>
-        </ul>
-        {error && <div className="cbt-error">{error}</div>}
-        <button className="cbt-primary-btn" onClick={mulaiUjian} disabled={loading}>{loading ? "Menyiapkan..." : "Mulai Mengerjakan"}</button>
-        <button className="cbt-text-btn" onClick={() => setStage("daftar")}>&larr; Kembali ke daftar mapel</button>
-      </div>
-    </div>}
-
-    {stage === "ujian" && soalList.length > 0 && <div className="cbt-exam-layout">
-      <header className="cbt-exam-header">
-        <div className="cbt-exam-title">{ujianAktif?.mapel} &mdash; {kegiatanInfo?.nama}</div>
-        <div className={`cbt-timer ${sisaDetik < 300 ? "danger" : ""}`}>{fmtTime(sisaDetik)}</div>
-      </header>
-      {warning && <div className="cbt-warning-banner" onAnimationEnd={() => setWarning("")}>{warning} (Total pelanggaran: {violations})</div>}
-      <div className="cbt-exam-body">
-        <aside className="cbt-nav-panel">
-          <div className="cbt-nav-title">Navigasi Soal</div>
-          <div className="cbt-nav-grid">{soalList.map((s, i) => <button key={s.id} className={`cbt-nav-btn ${i === idx ? "active" : ""} ${jawaban[s.id] !== undefined ? "answered" : ""}`} onClick={() => setIdx(i)}>{i + 1}</button>)}</div>
-          <div className="cbt-nav-progress">{terjawab} / {soalList.length} terjawab</div>
-          <button className="cbt-primary-btn danger" onClick={() => { if (window.confirm("Yakin sudah selesai mapel ini? Jawaban tidak bisa diubah lagi setelah ini.")) selesaiUjian(); }}>Selesai Mapel Ini</button>
-        </aside>
-        <main className="cbt-question-panel">
-          <div className="cbt-question-count">Soal {idx + 1} dari {soalList.length}</div>
-          <div className="cbt-question-text">{soalList[idx].pertanyaan}</div>
-          {soalList[idx].gambar && <div className="cbt-question-image"><img src={soalList[idx].gambar} alt="Ilustrasi soal" /></div>}
-          <div className="cbt-options">
-            {soalList[idx].pilihan.map((p) => <button key={p.index} className={`cbt-option ${jawaban[soalList[idx].id] === p.index ? "selected" : ""}`} onClick={() => pilihJawaban(soalList[idx].id, p.index)}>{p.teks}</button>)}
-          </div>
-          <div className="cbt-question-footer">
-            <button className="cbt-nav-arrow" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>&larr; Sebelumnya</button>
-            <button className="cbt-nav-arrow" disabled={idx === soalList.length - 1} onClick={() => setIdx((i) => i + 1)}>Berikutnya &rarr;</button>
-          </div>
-        </main>
-      </div>
-    </div>}
-
-    {stage === "selesai-mapel" && <div className="cbt-center">
-      <div className="cbt-login-card">
-        <div className="cbt-logo-dot">✓</div>
-        <h1>{ujianAktif?.mapel} Selesai</h1>
-        <p>Jawaban kamu untuk mapel ini sudah tersimpan.</p>
-        {nilaiSelesai !== null && <div className="cbt-score">{nilaiSelesai}</div>}
-        <button className="cbt-primary-btn" onClick={kembaliKeDaftar}>Lanjut Mapel Lain</button>
-      </div>
-    </div>}
-
-    {stage === "semua-selesai" && <div className="cbt-center">
-      <div className="cbt-login-card">
-        <div className="cbt-logo-dot">✓</div>
-        <h1>Semua Ujian Selesai</h1>
-        <p>Terima kasih, {studentName}. Semua mata pelajaran sudah kamu kerjakan.</p>
-        <p className="cbt-muted-note">Kamu boleh menutup halaman ini sekarang.</p>
-      </div>
-    </div>}
-  </div>;
 }
 
 function App() {
@@ -514,11 +252,7 @@ function App() {
           {active === "rekap-absen-harian" && <DailyAttendanceRekap showToast={showToast} classes={classNames} />}
           {active === "akun-tu" && <TuAccountsAdmin showToast={showToast} />}
           {active === "akun-kepsek" && <KepsekAccountsAdmin showToast={showToast} />}
-          {active === "bank-soal" && <BankSoalPage showToast={showToast} subjects={subjectNames} />}
-          {active === "ujian-cbt" && <UjianKegiatanPage showToast={showToast} classes={classNames} subjects={subjectNames} />}
-          {active === "kartu-ujian" && <KartuUjianPage showToast={showToast} />}
-          {active === "monitor-cbt" && <CBTMonitorPage showToast={showToast} />}
-          {active === "hasil-angkatan" && <CBTHasilAngkatanPage showToast={showToast} />}
+
           {active === "akun-cbt" && <CBTAccountsAdmin showToast={showToast} />}
           {active === "siswa" && masters && <Master title="Kelola Siswa" icon={Users} rows={masters.students} addLabel="Tambah siswa" onAdd={addMaster("students", "Data siswa diperbarui")} onUpdate={updateMaster("students", "Data siswa diperbarui")} onDelete={deleteMaster("students", "Data siswa dihapus")} classes={classNames} onImport={importMaster("students", "Siswa")} />}
           {active === "mapel" && masters && <Master title="Kelola Mata Pelajaran" icon={BookOpen} rows={masters.subjects} addLabel="Tambah mapel" onAdd={addMaster("subjects", "Mata pelajaran ditambahkan")} onUpdate={updateMaster("subjects", "Data mapel diperbarui")} onDelete={deleteMaster("subjects", "Data mapel dihapus")} />}
@@ -1451,166 +1185,6 @@ function BankSoalPage({ showToast, subjects }) {
   </>;
 }
 
-function UjianKegiatanPage({ showToast, classes, subjects }) {
-  const emptyForm = { nama: "", tipe: "", class_name: classes?.[0] || "", mapel_list: [], durasi_menit: 60 };
-  const [kegiatanList, setKegiatanList] = useState([]);
-  const [form, setForm] = useState(emptyForm);
-  const [expanded, setExpanded] = useState(null);
-  const [ujianDalamKegiatan, setUjianDalamKegiatan] = useState([]);
-  const [paketOptions, setPaketOptions] = useState({});
-  const [submitForm, setSubmitForm] = useState({ mapel: "", paket_id: "", acak_soal: true, acak_pilihan: true });
-  const [jadwalForm, setJadwalForm] = useState({ mulaiLocal: "", selesaiLocal: "" });
-  const [viewingHasil, setViewingHasil] = useState(null);
-  const [hasilList, setHasilList] = useState([]);
-
-  const load = () => axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat kegiatan ujian"));
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const toggleMapel = (m) => setForm((f) => ({ ...f, mapel_list: f.mapel_list.includes(m) ? f.mapel_list.filter((x) => x !== m) : [...f.mapel_list, m] }));
-  const submitKegiatan = async () => {
-    if (!form.nama.trim() || !form.mapel_list.length) return showToast("Nama kegiatan dan minimal 1 mapel wajib diisi");
-    try { await axios.post(`${API}/cbt/kegiatan`, form); showToast("Kegiatan ujian dibuat"); setForm(emptyForm); load(); }
-    catch (err) { showToast(errMsg(err, "Gagal membuat kegiatan")); }
-  };
-  const removeKegiatan = async (id) => { if (!window.confirm("Hapus kegiatan ini beserta semua ujian, kartu & hasilnya?")) return; try { await axios.delete(`${API}/cbt/kegiatan/${id}`); showToast("Kegiatan dihapus"); if (expanded === id) setExpanded(null); load(); } catch { showToast("Gagal menghapus"); } };
-
-  const openKegiatan = async (k) => {
-    if (expanded === k.id) { setExpanded(null); return; }
-    setExpanded(k.id);
-    setJadwalForm({ mulaiLocal: "", selesaiLocal: "" });
-    try { const { data } = await axios.get(`${API}/cbt/kegiatan/${k.id}/ujian`); setUjianDalamKegiatan(data); } catch { showToast("Gagal memuat data kegiatan"); }
-  };
-  const loadPaketUntukMapel = async (mapel) => {
-    if (paketOptions[mapel]) return;
-    try { const { data } = await axios.get(`${API}/cbt/paket`, { params: { mapel } }); setPaketOptions((prev) => ({ ...prev, [mapel]: data })); } catch { /* noop */ }
-  };
-  const submitPaketMapel = async (kegiatanId) => {
-    if (!submitForm.mapel || !submitForm.paket_id) return showToast("Pilih mapel dan paket soal dulu");
-    try {
-      await axios.post(`${API}/cbt/kegiatan/${kegiatanId}/ujian`, submitForm);
-      showToast(`Paket soal untuk ${submitForm.mapel} terpasang ke kegiatan`);
-      setSubmitForm({ mapel: "", paket_id: "", acak_soal: true, acak_pilihan: true });
-      const { data } = await axios.get(`${API}/cbt/kegiatan/${kegiatanId}/ujian`); setUjianDalamKegiatan(data);
-      load();
-    } catch (err) { showToast(errMsg(err, "Gagal memasang paket soal")); }
-  };
-  const removeUjianMapel = async (ujianId, kegiatanId) => { if (!window.confirm("Batalkan mapel ini dari kegiatan?")) return; try { await axios.delete(`${API}/cbt/ujian/${ujianId}`); showToast("Dibatalkan"); const { data } = await axios.get(`${API}/cbt/kegiatan/${kegiatanId}/ujian`); setUjianDalamKegiatan(data); load(); } catch { showToast("Gagal membatalkan"); } };
-
-  const simpanJadwal = async (kegiatanId) => {
-    if (!jadwalForm.mulaiLocal || !jadwalForm.selesaiLocal) return showToast("Isi jadwal mulai dan selesai");
-    try {
-      await axios.put(`${API}/cbt/kegiatan/${kegiatanId}/jadwal`, { mulai: new Date(jadwalForm.mulaiLocal).toISOString(), selesai: new Date(jadwalForm.selesaiLocal).toISOString() });
-      showToast("Jadwal kegiatan ujian disimpan"); load();
-    } catch (err) { showToast(errMsg(err, "Gagal menyimpan jadwal")); }
-  };
-  const lihatHasil = async (u) => { setViewingHasil(u); try { const { data } = await axios.get(`${API}/cbt/ujian/${u.id}/hasil`); setHasilList(data); } catch { showToast("Gagal memuat hasil"); } };
-
-  return <>
-    <PageTitle eyebrow="CBT" title="Kegiatan Ujian" description="Cocok untuk ujian serentak lintas mapel seperti ASTS/ASAS." />
-    <section className="panel" style={{ marginBottom: 18 }}>
-      <PanelHeading title="Buat Kegiatan Ujian Baru" />
-      <div className="form-grid">
-        <label className="field">Nama Kegiatan<input value={form.nama} onChange={(e) => setForm({ ...form, nama: e.target.value })} placeholder="Contoh: ASTS Ganjil 2026/2027" /></label>
-        <label className="field">Jenis<select value={form.tipe} onChange={(e) => setForm({ ...form, tipe: e.target.value })}><option value="">- Pilih -</option><option value="Harian">Ulangan Harian</option><option value="ASTS">ASTS (Tengah Semester)</option><option value="ASAS">ASAS (Akhir Semester)</option><option value="Lainnya">Lainnya</option></select></label>
-        <Select label="Kelas" value={form.class_name} onChange={(v) => setForm({ ...form, class_name: v })} options={classes} />
-        <label className="field">Durasi per Mapel (menit)<input type="number" min="1" value={form.durasi_menit} onChange={(e) => setForm({ ...form, durasi_menit: Number(e.target.value) })} /></label>
-      </div>
-      <div className="nav-caption" style={{ padding: "10px 0 8px" }}>Mata Pelajaran yang Diujikan ({form.mapel_list.length} dipilih)</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-        {subjects.map((s) => <label key={s} className={`chip-button ${form.mapel_list.includes(s) ? "green" : "amber"}`} style={{ cursor: "pointer" }}><input type="checkbox" checked={form.mapel_list.includes(s)} onChange={() => toggleMapel(s)} style={{ marginRight: 4 }} />{s}</label>)}
-      </div>
-      <button className="primary-button" onClick={submitKegiatan}><Save size={16} /> Buat Kegiatan</button>
-    </section>
-    <section className="panel">
-      <PanelHeading title="Daftar Kegiatan Ujian" />
-      {!kegiatanList.length && <p className="muted">Belum ada kegiatan ujian dibuat.</p>}
-      {kegiatanList.map((k) => <div key={k.id} className="panel" style={{ marginBottom: 12, background: "#fbfcfa" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => openKegiatan(k)}>
-          <div><strong>{k.nama}</strong><div className="muted" style={{ fontSize: 12 }}>{k.tipe || "-"} · Kelas {k.class_name} · {k.mapel_list.length} mapel</div></div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span className={`chip-button ${k.siap_dijadwalkan ? "green" : "amber"}`}>{k.siap_dijadwalkan ? "Siap dijadwalkan" : `${k.mapel_terisi.length}/${k.mapel_list.length} mapel masuk`}</span>
-            {k.mulai && <span className="chip-button green">Terjadwal</span>}
-            <button className="icon-button" aria-label="Hapus" onClick={(e) => { e.stopPropagation(); removeKegiatan(k.id); }}><Trash2 size={15} /></button>
-            <ChevronDown size={16} style={{ transform: expanded === k.id ? "rotate(180deg)" : "none" }} />
-          </div>
-        </div>
-        {expanded === k.id && <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
-          <div className="nav-caption" style={{ padding: "0 0 8px" }}>Status per Mapel</div>
-          <table className="table-print" style={{ marginBottom: 14 }}><thead><tr><th>Mapel</th><th>Paket Soal</th><th></th></tr></thead><tbody>
-            {k.mapel_list.map((m) => { const u = ujianDalamKegiatan.find((x) => x.mapel === m); return <tr key={m}><td>{m}</td><td>{u ? "Sudah terpasang" : <span style={{ color: "#a96d28" }}>Belum ada</span>}</td><td>{u && <><button className="text-button" onClick={() => lihatHasil(u)}>Hasil</button> <button className="icon-button" aria-label="Batalkan" onClick={() => removeUjianMapel(u.id, k.id)}><Trash2 size={14} /></button></>}</td></tr>; })}
-          </tbody></table>
-          {k.mapel_belum.length > 0 && <div style={{ marginBottom: 16, padding: 12, background: "#fbf3ea", borderRadius: 10 }}>
-            <div className="nav-caption" style={{ padding: "0 0 8px" }}>Pasang Paket Soal untuk Mapel yang Belum</div>
-            <div className="filter-grid">
-              <label className="field">Mapel<select value={submitForm.mapel} onChange={(e) => { setSubmitForm({ ...submitForm, mapel: e.target.value, paket_id: "" }); loadPaketUntukMapel(e.target.value); }}><option value="">- Pilih -</option>{k.mapel_belum.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
-              <label className="field">Paket Soal<select value={submitForm.paket_id} onChange={(e) => setSubmitForm({ ...submitForm, paket_id: e.target.value })} disabled={!submitForm.mapel}><option value="">- Pilih paket -</option>{(paketOptions[submitForm.mapel] || []).map((p) => <option key={p.id} value={p.id}>{p.nama} ({p.jumlah_soal} soal)</option>)}</select></label>
-              <button className="primary-button filter-button" onClick={() => submitPaketMapel(k.id)}><Save size={15} /> Pasang</button>
-            </div>
-            {submitForm.mapel && !(paketOptions[submitForm.mapel] || []).length && <p className="muted" style={{ marginTop: 6 }}>Belum ada paket soal untuk mapel ini di Bank Soal.</p>}
-          </div>}
-          {k.siap_dijadwalkan && !k.mulai && <div style={{ padding: 12, background: "#e4f3e9", borderRadius: 10 }}>
-            <div className="nav-caption" style={{ padding: "0 0 8px" }}>Semua mapel sudah masuk — atur jadwal ujiannya</div>
-            <div className="filter-grid">
-              <label className="field">Jadwal Mulai<input type="datetime-local" value={jadwalForm.mulaiLocal} onChange={(e) => setJadwalForm({ ...jadwalForm, mulaiLocal: e.target.value })} /></label>
-              <label className="field">Jadwal Selesai<input type="datetime-local" value={jadwalForm.selesaiLocal} onChange={(e) => setJadwalForm({ ...jadwalForm, selesaiLocal: e.target.value })} /></label>
-              <button className="primary-button filter-button" onClick={() => simpanJadwal(k.id)}><Save size={15} /> Simpan Jadwal</button>
-            </div>
-          </div>}
-          {k.mulai && <p className="muted">Jadwal: {new Date(k.mulai).toLocaleString("id-ID")} &mdash; {new Date(k.selesai).toLocaleString("id-ID")}</p>}
-        </div>}
-      </div>)}
-    </section>
-    {viewingHasil && <section className="panel" style={{ marginTop: 18 }}>
-      <PanelHeading title={`Hasil: ${viewingHasil.mapel}`} action={<button className="icon-button" aria-label="Tutup" onClick={() => setViewingHasil(null)}><X size={18} /></button>} />
-      <div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Nilai</th><th>Pelanggaran</th><th>Status</th></tr></thead><tbody>
-        {!hasilList.length && <tr><td colSpan={4} className="text-center">Belum ada siswa yang mengerjakan</td></tr>}
-        {hasilList.map((h) => <tr key={h.id}><td>{h.student_name}</td><td className="text-center">{h.nilai ?? "-"}</td><td className="text-center">{h.pelanggaran || 0}x</td><td className="text-center">{h.selesai_at ? "Selesai" : "Sedang mengerjakan"}</td></tr>)}
-      </tbody></table></div>
-    </section>}
-  </>;
-}
-
-function KartuUjianPage({ showToast }) {
-  const [kegiatanList, setKegiatanList] = useState([]);
-  const [selectedKegiatan, setSelectedKegiatan] = useState("");
-  const [kartuList, setKartuList] = useState([]);
-  const [generating, setGenerating] = useState(false);
-  useEffect(() => { axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat daftar kegiatan")); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const loadKartu = (kegiatanId) => axios.get(`${API}/cbt/kartu`, { params: { kegiatan_id: kegiatanId } }).then(({ data }) => setKartuList(data)).catch(() => {});
-  useEffect(() => { if (selectedKegiatan) loadKartu(selectedKegiatan); else setKartuList([]); }, [selectedKegiatan]); // eslint-disable-line react-hooks/exhaustive-deps
-  const kegiatan = kegiatanList.find((k) => k.id === selectedKegiatan);
-  const bisaGenerate = kegiatan && kegiatan.siap_dijadwalkan && kegiatan.mulai;
-  const generate = async () => {
-    if (!selectedKegiatan) return showToast("Pilih kegiatan ujian dulu");
-    if (!bisaGenerate) return showToast("Kegiatan ini belum siap: pastikan semua mapel sudah kirim paket soal dan jadwal sudah diatur di menu Kegiatan Ujian");
-    if (kartuList.length && !window.confirm("Kartu untuk kegiatan ini sudah ada. Buat ulang? Kartu & hasil lama akan hilang.")) return;
-    setGenerating(true);
-    try { await axios.post(`${API}/cbt/kartu/generate`, {}, { params: { kegiatan_id: selectedKegiatan } }); showToast("Kartu ujian dibuat"); loadKartu(selectedKegiatan); }
-    catch (err) { showToast(errMsg(err, "Gagal membuat kartu")); }
-    finally { setGenerating(false); }
-  };
-  const cbtUrl = `${window.location.origin}/cbt`;
-
-  return <>
-    <PageTitle eyebrow="CBT" title="Kartu Ujian" description="Satu kartu untuk satu kegiatan ujian, berlaku untuk semua mapel di dalamnya." />
-    <section className="panel" style={{ marginBottom: 18 }}>
-      <div className="filter-grid">
-        <label className="field">Pilih Kegiatan Ujian<select value={selectedKegiatan} onChange={(e) => setSelectedKegiatan(e.target.value)}><option value="">- Pilih kegiatan -</option>{kegiatanList.map((k) => <option key={k.id} value={k.id}>{k.nama} (Kelas {k.class_name})</option>)}</select></label>
-        <button className="primary-button filter-button" onClick={generate} disabled={generating || !bisaGenerate}><RefreshCw size={16} /> {generating ? "Membuat..." : "Buat / Perbarui Kartu"}</button>
-      </div>
-      {kegiatan && !kegiatan.siap_dijadwalkan && <p className="muted" style={{ marginTop: 8, color: "#a96d28" }}>Belum bisa: mapel {kegiatan.mapel_belum.join(", ")} belum kirim paket soal.</p>}
-      {kegiatan && kegiatan.siap_dijadwalkan && !kegiatan.mulai && <p className="muted" style={{ marginTop: 8, color: "#a96d28" }}>Semua mapel sudah masuk, tapi jadwal belum diatur. Atur dulu di menu Kegiatan Ujian.</p>}
-      {kegiatan && bisaGenerate && <p className="muted" style={{ marginTop: 8 }}>Kelas {kegiatan.class_name} · Alamat ujian: <strong>{cbtUrl}</strong></p>}
-    </section>
-    {kartuList.length > 0 && <section className="panel">
-      <PanelHeading title={`Kartu Peserta (${kartuList.length})`} action={<button className="secondary-button no-print" onClick={() => window.print()}><Printer size={16} /> Cetak</button>} />
-      <div className="table-wrap"><table className="table-print"><thead><tr><th>Nama Siswa</th><th>Username</th><th>Password</th><th>Status</th></tr></thead><tbody>
-        {kartuList.map((k) => <tr key={k.id}><td>{k.student_name}</td><td>{k.username}</td><td>{k.password_plain}</td><td className="text-center">{k.status === "selesai" ? "Sudah ujian" : "Belum selesai"}</td></tr>)}
-      </tbody></table></div>
-    </section>}
-  </>;
-}
-
 function CBTAccountsAdmin({ showToast }) {
   const [accounts, setAccounts] = useState([]);
   const [form, setForm] = useState({ name: "", username: "", password: "" });
@@ -1640,70 +1214,514 @@ function CBTAccountsAdmin({ showToast }) {
   return <><PageTitle eyebrow="CBT" title="Akun Panitia CBT" description="Akun khusus untuk mengawasi ujian, reset sesi siswa, dan mengelola soal." /><section className="panel filter-grid" style={{ marginBottom: 18 }}><label className="field">Nama<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nama panitia" /></label><label className="field">Username{editing && <span style={{ fontWeight: 400, opacity: 0.7 }}> (tidak bisa diubah)</span>}<input value={form.username} disabled={!!editing} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label><label className="field">{editing ? "Password baru (opsional)" : "Password"}<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editing ? "Kosongkan jika tidak diganti" : "min 6 karakter"} /></label><button className="primary-button filter-button" onClick={submit}><Save size={16} /> {editing ? "Simpan perubahan" : "Buat akun"}</button>{editing && <button className="secondary-button" onClick={() => { setEditing(null); setForm({ name: "", username: "", password: "" }); }}><X size={16} /> Batal</button>}</section><section className="panel"><div className="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th></th></tr></thead><tbody>{accounts.map((a) => <tr key={a.id}><td>{a.name}</td><td>{a.username}</td><td><div style={{ display: "flex", gap: 6 }}><button className="icon-button" onClick={() => editAcc(a)}><Pencil size={16} /></button><button className="icon-button" onClick={() => remove(a.id)}><Trash2 size={16} /></button></div></td></tr>)}{!accounts.length && <tr><td colSpan="3">Belum ada akun panitia CBT.</td></tr>}</tbody></table></div></section></>;
 }
 
-function CBTMonitorPage({ showToast }) {
-  const [kegiatanList, setKegiatanList] = useState([]);
-  const [selectedKegiatan, setSelectedKegiatan] = useState("");
-  const [data, setData] = useState([]);
-  const load = () => axios.get(`${API}/cbt/kegiatan`).then(({ data }) => setKegiatanList(data)).catch(() => showToast("Gagal memuat daftar kegiatan"));
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const loadMonitor = () => selectedKegiatan && axios.get(`${API}/cbt/monitor`, { params: { kegiatan_id: selectedKegiatan } }).then(({ data }) => setData(data)).catch(() => {});
-  useEffect(() => { loadMonitor(); if (!selectedKegiatan) return; const t = setInterval(loadMonitor, 8000); return () => clearInterval(t); }, [selectedKegiatan]); // eslint-disable-line react-hooks/exhaustive-deps
-  const reset = async (h) => {
-    if (!window.confirm(`Reset sesi ${h.mapel} milik ${h.student_name}? Jawaban yang sudah ada akan hilang dan dia bisa mengerjakan ulang mapel ini dari awal.`)) return;
-    try { await axios.post(`${API}/cbt/reset/${h.id}`); showToast("Sesi berhasil direset"); loadMonitor(); }
-    catch (err) { showToast(errMsg(err, "Gagal mereset sesi")); }
-  };
-  const fmtDur = (s) => `${Math.floor(s / 60)}m ${s % 60}d`;
-  return <>
-    <PageTitle eyebrow="CBT" title="Pengawasan Ujian" description="Pantau siswa yang sedang mengerjakan, reset jika ada kecurangan." />
-    <section className="panel" style={{ marginBottom: 18 }}>
-      <label className="field">Pilih Kegiatan Ujian<select value={selectedKegiatan} onChange={(e) => setSelectedKegiatan(e.target.value)}><option value="">- Pilih kegiatan -</option>{kegiatanList.map((k) => <option key={k.id} value={k.id}>{k.nama} (Kelas {k.class_name})</option>)}</select></label>
-    </section>
-    {selectedKegiatan && <section className="panel">
-      <PanelHeading title={`Peserta (${data.length})`} subtitle="Otomatis diperbarui tiap 8 detik" />
-      <div className="table-wrap"><table><thead><tr><th>Nama Siswa</th><th>Mapel</th><th>Waktu Kerja</th><th>Pelanggaran</th><th>Status</th><th></th></tr></thead><tbody>
-        {!data.length && <tr><td colSpan={6} className="text-center">Belum ada siswa yang login kegiatan ini</td></tr>}
-        {data.map((h) => <tr key={h.id}><td>{h.student_name}</td><td>{h.mapel}</td><td className="text-center">{fmtDur(h.durasi_kerja_detik)}</td><td className="text-center">{h.pelanggaran > 2 ? <span style={{ color: "#c0392b", fontWeight: 700 }}>{h.pelanggaran}x</span> : `${h.pelanggaran || 0}x`}</td><td className="text-center">{h.selesai_at ? `Selesai (${h.nilai})` : "Sedang mengerjakan"}</td><td><button className="text-button" style={{ color: "#c0392b" }} onClick={() => reset(h)}>Reset</button></td></tr>)}
-      </tbody></table></div>
-    </section>}
-  </>;
-}
-
-function CBTHasilAngkatanPage({ showToast }) {
-  const [angkatan, setAngkatan] = useState("7");
-  const [tipe, setTipe] = useState("");
-  const download = async () => {
-    try {
-      const res = await axios.get(`${API}/cbt/hasil-angkatan`, { params: { angkatan, tipe: tipe || undefined }, responseType: "blob" });
-      const url = URL.createObjectURL(res.data); const a = document.createElement("a"); a.href = url; a.download = `hasil-cbt-angkatan-${angkatan}.xlsx`; a.click(); URL.revokeObjectURL(url);
-    } catch { showToast("Gagal mengunduh hasil"); }
-  };
-  return <>
-    <PageTitle eyebrow="CBT" title="Hasil per Angkatan" description="Unduh rekap nilai seluruh mata pelajaran untuk satu angkatan sekaligus." />
-    <section className="panel filter-grid">
-      <label className="field">Angkatan (Kelas)<select value={angkatan} onChange={(e) => setAngkatan(e.target.value)}><option value="7">Kelas 7</option><option value="8">Kelas 8</option><option value="9">Kelas 9</option></select></label>
-      <label className="field">Jenis Ujian<select value={tipe} onChange={(e) => setTipe(e.target.value)}><option value="">Semua jenis</option><option value="Harian">Ulangan Harian</option><option value="ASTS">ASTS</option><option value="ASAS">ASAS</option><option value="Lainnya">Lainnya</option></select></label>
-      <button className="primary-button filter-button" onClick={download}><FileDown size={16} /> Unduh Excel</button>
-    </section>
-  </>;
-}
-
 const CBT_ADMIN_NAV = [
-  { id: "monitor", label: "Pengawasan Ujian", icon: ShieldCheck },
-  { id: "bank-soal", label: "Bank Soal", icon: BookOpen },
-  { id: "ujian-cbt", label: "Kegiatan Ujian", icon: ClipboardCheck },
-  { id: "hasil-angkatan", label: "Hasil per Angkatan", icon: BarChart3 },
+  { id: "jadwal",    label: "Jadwal Ujian",     icon: CalendarDays },
+  { id: "token",     label: "Token Ujian",       icon: KeyRound },
+  { id: "monitor",   label: "Pengawasan",        icon: ShieldCheck },
+  { id: "susulan",   label: "Susulan",           icon: RefreshCw },
+  { id: "hasil",     label: "Hasil & Nilai",     icon: BarChart3 },
+  { id: "bank-soal", label: "Bank Soal",         icon: BookOpen },
 ];
 
+// ---- Jadwal Ujian ----
+function CbtJadwalPage({ showToast, classes, subjects }) {
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanId, setKegiatanId] = useState("");
+  const [jadwalList, setJadwalList] = useState([]);
+  const [paketList, setPaketList] = useState([]);
+  const [form, setForm] = useState({ mapel: subjects[0] || "", class_name: classes[0] || "", tanggal: today(), jam_mulai: "07:30", jam_selesai: "09:00", durasi_menit: 90, paket_id: "", acak_soal: true, acak_pilihan: true });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    axios.get(`${API}/cbt/kegiatan`).then(({ data }) => {
+      setKegiatan(data);
+      const aktif = data.find((k) => k.status === "aktif") || data[0];
+      if (aktif) setKegiatanId(aktif.id);
+    }).catch(() => showToast("Gagal memuat kegiatan"));
+    axios.get(`${API}/cbt/paket`).then(({ data }) => setPaketList(data)).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!kegiatanId) return;
+    axios.get(`${API}/cbt/ujian`, { params: { kegiatan_id: kegiatanId } }).then(({ data }) => setJadwalList(data)).catch(() => showToast("Gagal memuat jadwal"));
+  }, [kegiatanId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tambah = async () => {
+    if (!form.paket_id) return showToast("Pilih paket soal terlebih dahulu");
+    if (!form.mapel || !form.class_name) return showToast("Mapel dan kelas wajib diisi");
+    setSaving(true);
+    try {
+      await axios.post(`${API}/cbt/ujian`, { ...form, kegiatan_id: kegiatanId, durasi_menit: Number(form.durasi_menit) });
+      showToast("Jadwal ujian ditambahkan");
+      const { data } = await axios.get(`${API}/cbt/ujian`, { params: { kegiatan_id: kegiatanId } });
+      setJadwalList(data);
+    } catch (err) { showToast(errMsg(err, "Gagal menambah jadwal")); }
+    finally { setSaving(false); }
+  };
+
+  const hapus = async (id) => {
+    if (!window.confirm("Hapus jadwal ujian ini?")) return;
+    try {
+      await axios.delete(`${API}/cbt/ujian/${id}`);
+      showToast("Jadwal dihapus");
+      setJadwalList((l) => l.filter((j) => j.id !== id));
+    } catch (err) { showToast(errMsg(err, "Gagal menghapus jadwal")); }
+  };
+
+  // Kelompokkan jadwal per tanggal
+  const byDate = jadwalList.reduce((acc, j) => { (acc[j.tanggal] = acc[j.tanggal] || []).push(j); return acc; }, {});
+
+  return <>
+    <PageTitle eyebrow="Panitia CBT" title="Jadwal Ujian" description="Jadwalkan mata pelajaran per kelas beserta paket soal dan durasi pengerjaan." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Kegiatan CBT
+        <select value={kegiatanId} onChange={(e) => setKegiatanId(e.target.value)}>
+          <option value="">- Pilih kegiatan -</option>
+          {kegiatan.map((k) => <option key={k.id} value={k.id}>{k.nama} ({k.status})</option>)}
+        </select>
+      </label>
+    </div>
+    {kegiatanId && <>
+      <section className="panel" style={{ marginBottom: 16 }}>
+        <PanelHeading title="Tambah Jadwal Ujian" />
+        <div className="form-grid">
+          <label className="field">Mata Pelajaran
+            <select value={form.mapel} onChange={(e) => setForm({ ...form, mapel: e.target.value })}>
+              {subjects.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="field">Kelas
+            <select value={form.class_name} onChange={(e) => setForm({ ...form, class_name: e.target.value })}>
+              {classes.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label className="field">Tanggal Ujian
+            <input type="date" value={form.tanggal} onChange={(e) => setForm({ ...form, tanggal: e.target.value })} />
+          </label>
+          <label className="field">Jam Mulai
+            <input type="time" value={form.jam_mulai} onChange={(e) => setForm({ ...form, jam_mulai: e.target.value })} />
+          </label>
+          <label className="field">Jam Selesai
+            <input type="time" value={form.jam_selesai} onChange={(e) => setForm({ ...form, jam_selesai: e.target.value })} />
+          </label>
+          <label className="field">Durasi (menit)
+            <input type="number" min={10} max={300} value={form.durasi_menit} onChange={(e) => setForm({ ...form, durasi_menit: e.target.value })} />
+          </label>
+          <label className="field full">Paket Soal
+            <select value={form.paket_id} onChange={(e) => setForm({ ...form, paket_id: e.target.value })}>
+              <option value="">- Pilih paket soal -</option>
+              {paketList.map((p) => <option key={p.id} value={p.id}>{p.nama} — {p.mapel} ({p.jumlah_soal} soal)</option>)}
+            </select>
+          </label>
+          <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={form.acak_soal} onChange={(e) => setForm({ ...form, acak_soal: e.target.checked })} />
+            Acak urutan soal
+          </label>
+          <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={form.acak_pilihan} onChange={(e) => setForm({ ...form, acak_pilihan: e.target.checked })} />
+            Acak pilihan jawaban
+          </label>
+        </div>
+        <button className="primary-button" style={{ marginTop: 12 }} onClick={tambah} disabled={saving}>
+          <Plus size={16} /> {saving ? "Menyimpan..." : "Tambah Jadwal"}
+        </button>
+      </section>
+      <section className="panel">
+        <PanelHeading title="Daftar Jadwal" subtitle={`${jadwalList.length} sesi terjadwal`} />
+        {!jadwalList.length && <p style={{ color: "#6b7280", padding: 16 }}>Belum ada jadwal ujian untuk kegiatan ini.</p>}
+        {Object.entries(byDate).sort().map(([tgl, list]) => <div key={tgl} style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#176b4a", marginBottom: 8 }}>📅 {tgl}</div>
+          <div className="table-wrap">
+            <table><thead><tr><th>Mata Pelajaran</th><th>Kelas</th><th>Jam</th><th>Durasi</th><th>Paket Soal</th><th></th></tr></thead>
+              <tbody>
+                {list.sort((a, b) => a.jam_mulai.localeCompare(b.jam_mulai)).map((j) => {
+                  const paket = paketList.find((p) => p.id === j.paket_id);
+                  return <tr key={j.id}>
+                    <td><strong>{j.mapel}</strong></td>
+                    <td>{j.class_name}</td>
+                    <td>{j.jam_mulai} – {j.jam_selesai}</td>
+                    <td>{j.durasi_menit} menit</td>
+                    <td>{paket ? paket.nama : <span style={{ color: "#9ca3af" }}>-</span>}</td>
+                    <td><button className="icon-button" onClick={() => hapus(j.id)}><Trash2 size={16} /></button></td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>)}
+      </section>
+    </>}
+  </>;
+}
+
+// ---- Token Ujian ----
+function CbtTokenPage({ showToast }) {
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanId, setKegiatanId] = useState("");
+  const [ujianList, setUjianList] = useState([]);
+  const [tokenList, setTokenList] = useState([]);
+  const [form, setForm] = useState({ ujian_id: "", durasi_menit: 120 });
+  const [saving, setSaving] = useState(false);
+  const now = new Date().toISOString();
+
+  const load = async (kid) => {
+    if (!kid) return;
+    try {
+      const [ujianRes, tokenRes] = await Promise.allSettled([
+        axios.get(`${API}/cbt/ujian`, { params: { kegiatan_id: kid } }),
+        axios.get(`${API}/cbt/token`, { params: { kegiatan_id: kid } }),
+      ]);
+      if (ujianRes.status === "fulfilled") setUjianList(ujianRes.value.data);
+      if (tokenRes.status === "fulfilled") setTokenList(tokenRes.value.data);
+    } catch { showToast("Gagal memuat data token"); }
+  };
+
+  useEffect(() => {
+    axios.get(`${API}/cbt/kegiatan`).then(({ data }) => {
+      setKegiatan(data);
+      const aktif = data.find((k) => k.status === "aktif") || data[0];
+      if (aktif) { setKegiatanId(aktif.id); load(aktif.id); }
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const buatToken = async () => {
+    if (!form.ujian_id) return showToast("Pilih mata pelajaran terlebih dahulu");
+    setSaving(true);
+    try {
+      await axios.post(`${API}/cbt/token`, { ujian_id: form.ujian_id, durasi_menit: Number(form.durasi_menit) });
+      showToast("Token berhasil dibuat");
+      load(kegiatanId);
+    } catch (err) { showToast(errMsg(err, "Gagal membuat token")); }
+    finally { setSaving(false); }
+  };
+
+  const todayStr = today();
+  const ujianHariIni = ujianList.filter((u) => u.tanggal === todayStr);
+
+  return <>
+    <PageTitle eyebrow="Panitia CBT" title="Token Ujian" description="Buat token per mata pelajaran. Siswa memasukkan token ini sebelum mulai ujian." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Kegiatan CBT
+        <select value={kegiatanId} onChange={(e) => { setKegiatanId(e.target.value); load(e.target.value); }}>
+          {kegiatan.map((k) => <option key={k.id} value={k.id}>{k.nama}</option>)}
+        </select>
+      </label>
+    </div>
+    <section className="panel" style={{ marginBottom: 16 }}>
+      <PanelHeading title="Buat Token Baru" subtitle="Token lama untuk mapel yang sama akan otomatis dinonaktifkan" />
+      <div className="filter-grid">
+        <label className="field">Mata Pelajaran (jadwal hari ini)
+          <select value={form.ujian_id} onChange={(e) => setForm({ ...form, ujian_id: e.target.value })}>
+            <option value="">- Pilih mapel -</option>
+            {ujianHariIni.map((u) => <option key={u.id} value={u.id}>{u.mapel} — Kelas {u.class_name} ({u.jam_mulai})</option>)}
+            {!ujianHariIni.length && <option disabled>Tidak ada ujian hari ini</option>}
+          </select>
+        </label>
+        <label className="field">Berlaku selama (menit)
+          <input type="number" min={5} max={300} value={form.durasi_menit} onChange={(e) => setForm({ ...form, durasi_menit: e.target.value })} />
+        </label>
+        <button className="primary-button filter-button" onClick={buatToken} disabled={saving}>
+          <KeyRound size={16} /> {saving ? "Membuat..." : "Buat Token"}
+        </button>
+      </div>
+    </section>
+    <section className="panel">
+      <PanelHeading title="Token Aktif & Riwayat" />
+      <div className="table-wrap">
+        <table><thead><tr><th>Mata Pelajaran</th><th>Token</th><th>Berlaku Sampai</th><th>Status</th></tr></thead>
+          <tbody>
+            {tokenList.map((t) => {
+              const expired = t.berlaku_sampai < now || !t.aktif;
+              return <tr key={t.id}>
+                <td>{t.mapel}</td>
+                <td><span style={{ fontWeight: 800, fontSize: 20, letterSpacing: 6, fontFamily: "monospace", color: expired ? "#9ca3af" : "#176b4a" }}>{t.kode}</span></td>
+                <td style={{ fontSize: 13 }}>{t.berlaku_sampai?.slice(0, 16).replace("T", " ")}</td>
+                <td>{expired
+                  ? <span style={{ fontSize: 12, background: "#f3f4f6", color: "#6b7280", padding: "2px 8px", borderRadius: 12 }}>Expired</span>
+                  : <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>✓ Aktif</span>}
+                </td>
+              </tr>;
+            })}
+            {!tokenList.length && <tr><td colSpan="4">Belum ada token.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+// ---- Monitor Real-time ----
+function CbtMonitorPage({ showToast }) {
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanId, setKegiatanId] = useState("");
+  const [monitorData, setMonitorData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const intervalRef = useRef(null);
+
+  const load = async (kid) => {
+    if (!kid) return;
+    try {
+      const { data } = await axios.get(`${API}/cbt/monitor`, { params: { kegiatan_id: kid } });
+      setMonitorData(data);
+    } catch { /* abaikan error polling */ }
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    axios.get(`${API}/cbt/kegiatan`).then(({ data }) => {
+      setKegiatan(data);
+      const aktif = data.find((k) => k.status === "aktif") || data[0];
+      if (aktif) { setKegiatanId(aktif.id); load(aktif.id); }
+    }).catch(() => showToast("Gagal memuat kegiatan"))
+    .finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!kegiatanId) return;
+    load(kegiatanId);
+    intervalRef.current = setInterval(() => load(kegiatanId), 15000); // refresh tiap 15 detik
+    return () => clearInterval(intervalRef.current);
+  }, [kegiatanId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const totalSedang = monitorData.filter((s) => s.ujian.some((u) => u.status === "sedang")).length;
+  const totalSelesai = monitorData.filter((s) => s.ujian.every((u) => u.status === "selesai") && s.ujian.length > 0).length;
+  const totalPelanggaran = monitorData.reduce((a, s) => a + s.ujian.reduce((b, u) => b + (u.pelanggaran || 0), 0), 0);
+
+  return <>
+    <PageTitle eyebrow="Panitia CBT" title="Pengawasan Ujian" description="Pantau real-time siapa yang sedang mengerjakan. Diperbarui otomatis tiap 15 detik." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Kegiatan CBT
+        <select value={kegiatanId} onChange={(e) => { setKegiatanId(e.target.value); load(e.target.value); }}>
+          {kegiatan.map((k) => <option key={k.id} value={k.id}>{k.nama}</option>)}
+        </select>
+      </label>
+      <button className="secondary-button filter-button" onClick={() => load(kegiatanId)}><RefreshCw size={16} /> Refresh</button>
+    </div>
+    {!loading && <div className="stat-grid" style={{ marginBottom: 16 }}>
+      <Stat label="Sedang Mengerjakan" value={totalSedang} icon={ClipboardCheck} color="green" change="Siswa aktif" />
+      <Stat label="Sudah Selesai" value={totalSelesai} icon={Check} color="blue" change="Semua mapel selesai" />
+      <Stat label="Total Pelanggaran" value={totalPelanggaran} icon={AlertTriangle} color="rose" change="Seluruh siswa" />
+    </div>}
+    <section className="panel">
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama Siswa</th><th>Kelas</th><th>Mapel</th><th>Status</th><th>Pelanggaran</th></tr></thead>
+          <tbody>
+            {monitorData.flatMap((s) => s.ujian.length === 0
+              ? [<tr key={s.student_id}><td>{s.student_name}</td><td>{s.class_name}</td><td colSpan="3" style={{ color: "#9ca3af" }}>Belum mulai</td></tr>]
+              : s.ujian.map((u, i) => <tr key={`${s.student_id}-${i}`}>
+                {i === 0 && <td rowSpan={s.ujian.length}><strong>{s.student_name}</strong></td>}
+                {i === 0 && <td rowSpan={s.ujian.length}>{s.class_name}</td>}
+                <td>{u.mapel}</td>
+                <td>{u.status === "selesai"
+                  ? <span style={{ fontSize: 12, background: "#f3f4f6", color: "#6b7280", padding: "2px 8px", borderRadius: 12 }}>✓ Selesai</span>
+                  : <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>● Sedang</span>}
+                </td>
+                <td className="text-center">
+                  {u.pelanggaran > 0
+                    ? <span style={{ fontWeight: 700, color: "#dc2626" }}>{u.pelanggaran}x ⚠</span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+              </tr>)
+            )}
+            {!monitorData.length && <tr><td colSpan="5">Belum ada data pengerjaan.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+// ---- Susulan ----
+function CbtSusulanPage({ showToast }) {
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanId, setKegiatanId] = useState("");
+  const [ujianList, setUjianList] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [susulanList, setSusulanList] = useState([]);
+  const [form, setForm] = useState({ student_id: "", ujian_id: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = async (kid) => {
+    if (!kid) return;
+    try {
+      const [ujianRes, susulanRes] = await Promise.allSettled([
+        axios.get(`${API}/cbt/ujian`, { params: { kegiatan_id: kid } }),
+        axios.get(`${API}/cbt/susulan`, { params: { kegiatan_id: kid } }),
+      ]);
+      if (ujianRes.status === "fulfilled") setUjianList(ujianRes.value.data);
+      if (susulanRes.status === "fulfilled") setSusulanList(susulanRes.value.data);
+    } catch { showToast("Gagal memuat data susulan"); }
+  };
+
+  useEffect(() => {
+    axios.get(`${API}/cbt/kegiatan`).then(({ data }) => {
+      setKegiatan(data);
+      const aktif = data.find((k) => k.status === "aktif") || data[0];
+      if (aktif) { setKegiatanId(aktif.id); load(aktif.id); }
+    }).catch(() => {});
+    axios.get(`${API}/masters`).then(({ data }) => setStudents(data.students || [])).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bukaSusulan = async () => {
+    if (!form.student_id || !form.ujian_id) return showToast("Pilih siswa dan mata pelajaran");
+    setSaving(true);
+    try {
+      await axios.post(`${API}/cbt/susulan`, form);
+      showToast("Akses susulan berhasil dibuka");
+      setForm({ student_id: "", ujian_id: "" });
+      load(kegiatanId);
+    } catch (err) { showToast(errMsg(err, "Gagal membuka akses susulan")); }
+    finally { setSaving(false); }
+  };
+
+  return <>
+    <PageTitle eyebrow="Panitia CBT" title="Ujian Susulan" description="Buka akses susulan untuk siswa yang tidak hadir saat ujian berlangsung." />
+    <div className="filter-grid panel" style={{ marginBottom: 16 }}>
+      <label className="field">Kegiatan CBT
+        <select value={kegiatanId} onChange={(e) => { setKegiatanId(e.target.value); load(e.target.value); }}>
+          {kegiatan.map((k) => <option key={k.id} value={k.id}>{k.nama} ({k.status})</option>)}
+        </select>
+      </label>
+    </div>
+    <section className="panel" style={{ marginBottom: 16 }}>
+      <PanelHeading title="Buka Akses Susulan" subtitle="Jawaban lama siswa akan direset agar bisa mengerjakan ulang" />
+      <div className="filter-grid">
+        <label className="field">Siswa
+          <select value={form.student_id} onChange={(e) => setForm({ ...form, student_id: e.target.value })}>
+            <option value="">- Pilih siswa -</option>
+            {students.map((s) => <option key={s.id} value={String(s.id)}>{s.name} — {s.class_name}</option>)}
+          </select>
+        </label>
+        <label className="field">Mata Pelajaran
+          <select value={form.ujian_id} onChange={(e) => setForm({ ...form, ujian_id: e.target.value })}>
+            <option value="">- Pilih mapel -</option>
+            {ujianList.map((u) => <option key={u.id} value={u.id}>{u.mapel} — Kelas {u.class_name} ({u.tanggal})</option>)}
+          </select>
+        </label>
+        <button className="primary-button filter-button" onClick={bukaSusulan} disabled={saving}>
+          <RefreshCw size={16} /> {saving ? "Membuka..." : "Buka Susulan"}
+        </button>
+      </div>
+    </section>
+    <section className="panel">
+      <PanelHeading title="Daftar Susulan" subtitle={`${susulanList.length} susulan terdaftar`} />
+      <div className="table-wrap">
+        <table><thead><tr><th>Nama Siswa</th><th>Mata Pelajaran</th><th>Dibuka oleh</th><th>Status</th></tr></thead>
+          <tbody>
+            {susulanList.map((s) => <tr key={s.id}>
+              <td>{s.student_name}</td>
+              <td>{s.mapel}</td>
+              <td>{s.dibuka_oleh}</td>
+              <td>{s.aktif
+                ? <span style={{ fontSize: 12, background: "#fef9c3", color: "#854d0e", padding: "2px 8px", borderRadius: 12 }}>Menunggu</span>
+                : <span style={{ fontSize: 12, background: "#f3f4f6", color: "#6b7280", padding: "2px 8px", borderRadius: 12 }}>✓ Selesai</span>}
+              </td>
+            </tr>)}
+            {!susulanList.length && <tr><td colSpan="4">Belum ada susulan.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
+// ---- Hasil & Nilai ----
+function CbtHasilPage({ showToast }) {
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanId, setKegiatanId] = useState("");
+  const [hasilList, setHasilList] = useState([]);
+  const [downloading, setDownloading] = useState(false);
+
+  const load = async (kid) => {
+    if (!kid) return;
+    try {
+      const { data } = await axios.get(`${API}/cbt/hasil`, { params: { kegiatan_id: kid } });
+      setHasilList(data);
+    } catch { showToast("Gagal memuat hasil ujian"); }
+  };
+
+  useEffect(() => {
+    axios.get(`${API}/cbt/kegiatan`).then(({ data }) => {
+      setKegiatan(data);
+      const aktif = data.find((k) => k.status === "aktif") || data[0];
+      if (aktif) { setKegiatanId(aktif.id); load(aktif.id); }
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const download = async () => {
+    setDownloading(true);
+    try {
+      const res = await axios.get(`${API}/cbt/hasil/export`, { params: { kegiatan_id: kegiatanId }, responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement("a"); link.href = url; link.download = `nilai-cbt.xlsx`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast("File nilai berhasil diunduh");
+    } catch { showToast("Gagal mengunduh nilai"); }
+    finally { setDownloading(false); }
+  };
+
+  // Kelompokkan per siswa
+  const bySiswa = {};
+  hasilList.forEach((h) => { (bySiswa[h.student_name] = bySiswa[h.student_name] || []).push(h); });
+  const mapelList = [...new Set(hasilList.map((h) => h.mapel))].sort();
+
+  return <>
+    <PageTitle eyebrow="Panitia CBT" title="Hasil & Nilai" description="Nilai hanya bisa dilihat oleh Panitia CBT. Siswa tidak melihat nilai mereka." />
+    <div className="filter-grid panel" style={{ marginBottom: 16, alignItems: "flex-end" }}>
+      <label className="field">Kegiatan CBT
+        <select value={kegiatanId} onChange={(e) => { setKegiatanId(e.target.value); load(e.target.value); }}>
+          {kegiatan.map((k) => <option key={k.id} value={k.id}>{k.nama}</option>)}
+        </select>
+      </label>
+      <button className="primary-button filter-button" onClick={download} disabled={downloading || !hasilList.length}>
+        <FileDown size={16} /> {downloading ? "Mengunduh..." : "Download Excel"}
+      </button>
+    </div>
+    <section className="panel">
+      <PanelHeading title="Rekap Nilai" subtitle={`${Object.keys(bySiswa).length} siswa · ${mapelList.length} mata pelajaran`} />
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Nama Siswa</th><th>Kelas</th>{mapelList.map((m) => <th key={m}>{m}</th>)}<th>Pelanggaran</th></tr></thead>
+          <tbody>
+            {Object.entries(bySiswa).map(([nama, ujian]) => {
+              const nilaiMap = {};
+              let totalPelanggaran = 0;
+              let kelas = "-";
+              ujian.forEach((u) => { nilaiMap[u.mapel] = u.nilai; totalPelanggaran += u.pelanggaran || 0; kelas = u.class_name || kelas; });
+              return <tr key={nama}>
+                <td><strong>{nama}</strong></td>
+                <td>{kelas}</td>
+                {mapelList.map((m) => <td key={m} className="text-center">
+                  {nilaiMap[m] !== undefined
+                    ? <span style={{ fontWeight: 700, color: nilaiMap[m] >= 75 ? "#166534" : "#dc2626" }}>{nilaiMap[m]}</span>
+                    : <span style={{ color: "#9ca3af" }}>—</span>}
+                </td>)}
+                <td className="text-center">
+                  {totalPelanggaran > 0
+                    ? <span style={{ color: "#dc2626", fontWeight: 700 }}>{totalPelanggaran}x</span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+              </tr>;
+            })}
+            {!hasilList.length && <tr><td colSpan={3 + mapelList.length}>Belum ada hasil ujian.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
+}
+
 function CBTAdminApp({ user, showToast, toast, onLogout, masters }) {
-  const [active, setActive] = useState("monitor");
+  const [active, setActive] = useState("jadwal");
   const classes = (masters?.classes || []).map((c) => c.name);
   const subjects = (masters?.subjects || []).map((s) => s.name);
   return <MobileShell subtitle="Panitia CBT" roleLabel="Panitia CBT" user={user} navItems={CBT_ADMIN_NAV} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
-    {active === "monitor" && <CBTMonitorPage showToast={showToast} />}
+    {active === "jadwal"    && <CbtJadwalPage showToast={showToast} classes={classes} subjects={subjects} />}
+    {active === "token"     && <CbtTokenPage showToast={showToast} />}
+    {active === "monitor"   && <CbtMonitorPage showToast={showToast} />}
+    {active === "susulan"   && <CbtSusulanPage showToast={showToast} />}
+    {active === "hasil"     && <CbtHasilPage showToast={showToast} />}
     {active === "bank-soal" && <BankSoalPage showToast={showToast} subjects={subjects} />}
-    {active === "ujian-cbt" && <UjianKegiatanPage showToast={showToast} classes={classes} subjects={subjects} />}
-    {active === "hasil-angkatan" && <CBTHasilAngkatanPage showToast={showToast} />}
   </MobileShell>;
 }
 
@@ -3149,16 +3167,206 @@ function LaporanPage({ showToast }) {
   </>;
 }
 
+function TuCBTPage({ showToast, classes }) {
+  const [tab, setTab] = useState("kegiatan");
+  const [kegiatan, setKegiatan] = useState([]);
+  const [kegiatanAktif, setKegiatanAktif] = useState(null);
+  const [form, setForm] = useState({ nama: "", tanggal_mulai: today(), tanggal_selesai: today(), keterangan: "" });
+  const [aksesList, setAksesList] = useState([]);
+  const [filterKelas, setFilterKelas] = useState(classes[0] || "");
+  const [students, setStudents] = useState([]);
+  const [loadingAkses, setLoadingAkses] = useState(false);
+  const [savingId, setSavingId] = useState(null);
+
+  const loadKegiatan = async () => {
+    try {
+      const { data } = await axios.get(`${API}/cbt/kegiatan`);
+      setKegiatan(data);
+      setKegiatanAktif(data.find((k) => k.status === "aktif") || null);
+    } catch { showToast("Gagal memuat kegiatan CBT"); }
+  };
+
+  const loadAkses = async (cls) => {
+    if (!kegiatanAktif) return;
+    setLoadingAkses(true);
+    try {
+      const [siswaRes, aksesRes] = await Promise.allSettled([
+        axios.get(`${API}/students`, { params: { class_name: cls } }),
+        axios.get(`${API}/cbt/akses`, { params: { class_name: cls } }),
+      ]);
+      const siswaList = siswaRes.status === "fulfilled" ? siswaRes.value.data : [];
+      const aksesDocs = aksesRes.status === "fulfilled" ? aksesRes.value.data : [];
+      const aksesMap = {};
+      aksesDocs.forEach((a) => { aksesMap[String(a.student_id)] = a.aktif; });
+      setStudents(siswaList);
+      setAksesList(aksesMap);
+    } catch { showToast("Gagal memuat data akses"); }
+    finally { setLoadingAkses(false); }
+  };
+
+  useEffect(() => { loadKegiatan(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (tab === "akses" && filterKelas) loadAkses(filterKelas); }, [tab, filterKelas, kegiatanAktif]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const buatKegiatan = async () => {
+    if (!form.nama.trim()) return showToast("Nama kegiatan wajib diisi");
+    try {
+      await axios.post(`${API}/cbt/kegiatan`, form);
+      showToast("Kegiatan CBT berhasil dibuat");
+      setForm({ nama: "", tanggal_mulai: today(), tanggal_selesai: today(), keterangan: "" });
+      loadKegiatan();
+    } catch (err) { showToast(errMsg(err, "Gagal membuat kegiatan")); }
+  };
+
+  const aktifkan = async (id) => {
+    try { await axios.put(`${API}/cbt/kegiatan/${id}/aktifkan`); showToast("Kegiatan diaktifkan"); loadKegiatan(); }
+    catch (err) { showToast(errMsg(err, "Gagal mengaktifkan kegiatan")); }
+  };
+
+  const nonaktifkan = async (id) => {
+    if (!window.confirm("Nonaktifkan kegiatan ini? Menu CBT akan hilang dari semua siswa.")) return;
+    try { await axios.put(`${API}/cbt/kegiatan/${id}/nonaktifkan`); showToast("Kegiatan dinonaktifkan"); loadKegiatan(); }
+    catch (err) { showToast(errMsg(err, "Gagal menonaktifkan kegiatan")); }
+  };
+
+  const hapusKegiatan = async (id) => {
+    if (!window.confirm("Hapus kegiatan ini?")) return;
+    try { await axios.delete(`${API}/cbt/kegiatan/${id}`); showToast("Kegiatan dihapus"); loadKegiatan(); }
+    catch (err) { showToast(errMsg(err, "Gagal menghapus kegiatan")); }
+  };
+
+  const aktifkanKelas = async (aktif) => {
+    if (!kegiatanAktif) return showToast("Tidak ada kegiatan CBT yang aktif");
+    try {
+      await axios.post(`${API}/cbt/akses/kelas`, { class_name: filterKelas, aktif });
+      showToast(`CBT ${aktif ? "diaktifkan" : "dinonaktifkan"} untuk kelas ${filterKelas}`);
+      loadAkses(filterKelas);
+    } catch (err) { showToast(errMsg(err, "Gagal mengubah akses kelas")); }
+  };
+
+  const toggleSiswa = async (studentId, aktif) => {
+    if (!kegiatanAktif) return showToast("Tidak ada kegiatan CBT yang aktif");
+    setSavingId(studentId);
+    try {
+      await axios.post(`${API}/cbt/akses/siswa`, { student_id: String(studentId), aktif });
+      setAksesList((m) => ({ ...m, [String(studentId)]: aktif }));
+      showToast(`Akses CBT siswa ${aktif ? "diaktifkan" : "diblokir"}`);
+    } catch (err) { showToast(errMsg(err, "Gagal mengubah akses siswa")); }
+    finally { setSavingId(null); }
+  };
+
+  const tabStyle = (t) => ({ ...(tab === t ? { background: "#176b4a", color: "#fff" } : {}) });
+  const statusBadge = (s) => {
+    const cfg = { aktif: ["#dcfce7", "#166534", "Aktif"], draft: ["#fef9c3", "#854d0e", "Draft"], selesai: ["#f3f4f6", "#6b7280", "Selesai"] }[s] || ["#f3f4f6", "#6b7280", s];
+    return <span style={{ fontSize: 11, background: cfg[0], color: cfg[1], padding: "2px 8px", borderRadius: 12, fontWeight: 600 }}>{cfg[2]}</span>;
+  };
+
+  return <>
+    <PageTitle eyebrow="Tata Usaha" title="Kegiatan CBT" description="Kelola kegiatan ujian dan kontrol akses siswa per kelas atau per individu." />
+    {kegiatanAktif && <div style={{ background: "#dcfce7", border: "1px solid #86efac", borderRadius: 10, padding: "10px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+      <ClipboardCheck size={18} color="#166534" />
+      <span style={{ color: "#166534", fontWeight: 600 }}>Kegiatan aktif: {kegiatanAktif.nama}</span>
+      <span style={{ color: "#166534", fontSize: 12 }}>({kegiatanAktif.tanggal_mulai} s/d {kegiatanAktif.tanggal_selesai})</span>
+    </div>}
+
+    <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <button className="secondary-button" style={tabStyle("kegiatan")} onClick={() => setTab("kegiatan")}><ClipboardCheck size={16} /> Kegiatan</button>
+      <button className="secondary-button" style={tabStyle("akses")} onClick={() => setTab("akses")}><Users size={16} /> Akses Siswa</button>
+    </div>
+
+    {tab === "kegiatan" && <>
+      <section className="panel" style={{ marginBottom: 16 }}>
+        <PanelHeading title="Buat Kegiatan Baru" subtitle="Hanya satu kegiatan yang bisa aktif dalam satu waktu" />
+        <div className="filter-grid">
+          <label className="field full">Nama Kegiatan<input value={form.nama} onChange={(e) => setForm({ ...form, nama: e.target.value })} placeholder="Contoh: UAS Semester 1 2026/2027" /></label>
+          <label className="field">Tanggal Mulai<input type="date" value={form.tanggal_mulai} onChange={(e) => setForm({ ...form, tanggal_mulai: e.target.value })} /></label>
+          <label className="field">Tanggal Selesai<input type="date" value={form.tanggal_selesai} onChange={(e) => setForm({ ...form, tanggal_selesai: e.target.value })} /></label>
+          <label className="field full">Keterangan (opsional)<input value={form.keterangan} onChange={(e) => setForm({ ...form, keterangan: e.target.value })} placeholder="Misal: Ujian akhir semester ganjil" /></label>
+          <button className="primary-button filter-button" onClick={buatKegiatan}><Plus size={16} /> Buat Kegiatan</button>
+        </div>
+      </section>
+      <section className="panel">
+        <PanelHeading title="Daftar Kegiatan CBT" />
+        <div className="table-wrap">
+          <table><thead><tr><th>Nama Kegiatan</th><th>Tanggal</th><th>Status</th><th>Dibuat oleh</th><th></th></tr></thead>
+            <tbody>
+              {kegiatan.map((k) => <tr key={k.id}>
+                <td><strong>{k.nama}</strong>{k.keterangan && <div style={{ fontSize: 12, color: "#6b7280" }}>{k.keterangan}</div>}</td>
+                <td style={{ fontSize: 13 }}>{k.tanggal_mulai} s/d {k.tanggal_selesai}</td>
+                <td>{statusBadge(k.status)}</td>
+                <td>{k.created_by}</td>
+                <td>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {k.status === "draft" && <button className="primary-button" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => aktifkan(k.id)}>Aktifkan</button>}
+                    {k.status === "aktif" && <button className="secondary-button" style={{ fontSize: 12, padding: "4px 10px", color: "#dc2626" }} onClick={() => nonaktifkan(k.id)}>Nonaktifkan</button>}
+                    {k.status !== "aktif" && <button className="icon-button" onClick={() => hapusKegiatan(k.id)}><Trash2 size={16} /></button>}
+                  </div>
+                </td>
+              </tr>)}
+              {!kegiatan.length && <tr><td colSpan="5">Belum ada kegiatan CBT.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>}
+
+    {tab === "akses" && <>
+      {!kegiatanAktif && <section className="panel" style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>
+        <ClipboardCheck size={36} style={{ marginBottom: 12, opacity: 0.4 }} />
+        <p>Tidak ada kegiatan CBT yang aktif. Aktifkan kegiatan terlebih dahulu di tab Kegiatan.</p>
+      </section>}
+      {kegiatanAktif && <>
+        <div className="filter-grid panel" style={{ marginBottom: 16, alignItems: "flex-end" }}>
+          <label className="field">Pilih Kelas
+            <select value={filterKelas} onChange={(e) => setFilterKelas(e.target.value)}>
+              {classes.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <button className="primary-button filter-button" onClick={() => aktifkanKelas(true)}><Check size={16} /> Aktifkan Semua</button>
+          <button className="secondary-button filter-button" style={{ color: "#dc2626" }} onClick={() => aktifkanKelas(false)}><X size={16} /> Blokir Semua</button>
+        </div>
+        <section className="panel">
+          <PanelHeading title={`Akses CBT — Kelas ${filterKelas}`} subtitle="Blokir siswa yang belum memenuhi syarat (misal: belum bayar SPP)" />
+          {loadingAkses ? <p style={{ padding: 16, color: "#6b7280" }}>Memuat data...</p> : <div className="table-wrap">
+            <table><thead><tr><th>Nama Siswa</th><th>Status Akses</th><th>Aksi</th></tr></thead>
+              <tbody>
+                {students.map((s) => {
+                  const aktif = aksesList[String(s.id)] === true;
+                  const belumDiatur = aksesList[String(s.id)] === undefined;
+                  return <tr key={s.id}>
+                    <td>{s.name}</td>
+                    <td>
+                      {belumDiatur && <span style={{ fontSize: 12, color: "#9ca3af" }}>Belum diatur</span>}
+                      {!belumDiatur && aktif && <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12 }}>✓ Aktif</span>}
+                      {!belumDiatur && !aktif && <span style={{ fontSize: 12, background: "#fee2e2", color: "#dc2626", padding: "2px 8px", borderRadius: 12 }}>✗ Diblokir</span>}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button className="primary-button" style={{ fontSize: 11, padding: "3px 10px" }} disabled={savingId === s.id || aktif} onClick={() => toggleSiswa(s.id, true)}>Aktifkan</button>
+                        <button className="secondary-button" style={{ fontSize: 11, padding: "3px 10px", color: "#dc2626" }} disabled={savingId === s.id || (!aktif && !belumDiatur)} onClick={() => toggleSiswa(s.id, false)}>Blokir</button>
+                      </div>
+                    </td>
+                  </tr>;
+                })}
+                {!students.length && <tr><td colSpan="3">Belum ada siswa di kelas ini.</td></tr>}
+              </tbody>
+            </table>
+          </div>}
+        </section>
+      </>}
+    </>}
+  </>;
+}
+
 const TU_NAV = [
-  { id: "buku-induk", label: "Buku Induk", icon: BookOpen },
-  { id: "kelola-siswa", label: "Kelola Siswa", icon: Users },
-  { id: "kelola-kelas", label: "Kelola Kelas", icon: School },
-  { id: "biodata-guru", label: "Biodata Guru", icon: IdCard },
-  { id: "manajemen-akun", label: "Manajemen Akun", icon: UserCog },
-  { id: "persuratan", label: "Persuratan", icon: FileText },
+  { id: "buku-induk",          label: "Buku Induk",         icon: BookOpen },
+  { id: "kelola-siswa",        label: "Kelola Siswa",        icon: Users },
+  { id: "kelola-kelas",        label: "Kelola Kelas",        icon: School },
+  { id: "biodata-guru",        label: "Biodata Guru",        icon: IdCard },
+  { id: "manajemen-akun",      label: "Manajemen Akun",      icon: UserCog },
+  { id: "persuratan",          label: "Persuratan",          icon: FileText },
   { id: "rekap-absensi-siswa", label: "Rekap Absensi Siswa", icon: BarChart3 },
-  { id: "kartu-ujian", label: "Kartu Ujian CBT", icon: ClipboardCheck },
-  { id: "laporan", label: "Laporan", icon: FileDown },
+  { id: "kegiatan-cbt",        label: "Kegiatan CBT",        icon: ClipboardCheck },
+  { id: "laporan",             label: "Laporan",             icon: FileDown },
 ];
 
 function TuApp({ user, showToast, toast, onLogout, masters, addMaster, updateMaster, deleteMaster, importMaster, onReloadMasters }) {
@@ -3172,27 +3380,285 @@ function TuApp({ user, showToast, toast, onLogout, masters, addMaster, updateMas
     {active === "manajemen-akun" && <ManajemenAkunPage showToast={showToast} classes={classes} />}
     {active === "persuratan" && <PersuratanPage showToast={showToast} />}
     {active === "rekap-absensi-siswa" && <DailyAttendanceRekap showToast={showToast} classes={classes} />}
-    {active === "kartu-ujian" && <KartuUjianPage showToast={showToast} />}
+    {active === "kegiatan-cbt" && <TuCBTPage showToast={showToast} classes={classes} />}
     {active === "laporan" && <LaporanPage showToast={showToast} />}
   </MobileShell>;
 }
 
 const SISWA_NAV = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "biodata", label: "Biodata Saya", icon: UserRound },
-  { id: "kartu", label: "Kartu Pelajar", icon: IdCard },
-  { id: "nilai", label: "Transkrip Nilai", icon: GraduationCap },
-  { id: "cbt", label: "Ujian CBT", icon: ClipboardCheck },
+  { id: "dashboard", label: "Dashboard",      icon: LayoutDashboard },
+  { id: "biodata",   label: "Biodata Saya",   icon: UserRound },
+  { id: "kartu",     label: "Kartu Pelajar",  icon: IdCard },
+  { id: "nilai",     label: "Transkrip Nilai", icon: GraduationCap },
+  // Menu CBT ditambahkan dinamis di SiswaApp berdasarkan akses dari TU
 ];
 
-function SiswaCBTInfo() {
-  return <><PageTitle eyebrow="Siswa" title="Ujian CBT" description="Ujian online dikerjakan di halaman terpisah, bukan di sini." />
-    <section className="panel" style={{ textAlign: "center", padding: "40px 24px" }}>
-      <ClipboardCheck size={40} color="#8a9690" style={{ marginBottom: 14 }} />
-      <p style={{ maxWidth: 420, margin: "0 auto 20px", color: "#5c675f" }}>Untuk mengerjakan ujian CBT, gunakan <strong>username & password kartu ujian</strong> yang diberikan oleh Tata Usaha atau panitia ujian &mdash; bukan akun portal siswa ini.</p>
-      <a className="primary-button" href="/cbt" target="_blank" rel="noreferrer" style={{ display: "inline-flex", textDecoration: "none" }}><ClipboardCheck size={16} /> Buka Halaman Ujian CBT</a>
-    </section>
-  </>;
+function SiswaCBTPortal({ showToast, user, onSelesai }) {
+  const [stage, setStage] = useState("jadwal"); // jadwal | token | ujian | selesai
+  const [jadwal, setJadwal] = useState([]);
+  const [selected, setSelected] = useState(null); // ujian yang dipilih
+  const [token, setToken] = useState("");
+  const [soalData, setSoalData] = useState(null);
+  const [jawaban, setJawaban] = useState({});
+  const [idxSoal, setIdxSoal] = useState(0);
+  const [sisaDetik, setSisaDetik] = useState(0);
+  const [deadline, setDeadline] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [violations, setViolations] = useState(0);
+  const lastViolationRef = useRef(0);
+
+  const loadJadwal = async () => {
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/cbt/siswa/jadwal-hari-ini`);
+      setJadwal(data);
+    } catch (err) { showToast(errMsg(err, "Gagal memuat jadwal ujian")); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { loadJadwal(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Timer berbasis deadline absolut
+  useEffect(() => {
+    if (stage !== "ujian" || !deadline) return;
+    const tick = () => {
+      const sisa = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      setSisaDetik(sisa);
+      if (sisa <= 0) selesaiUjian();
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [stage, deadline]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Deteksi pelanggaran
+  useEffect(() => {
+    if (stage !== "ujian") return;
+    const catat = (tipe) => {
+      const now = Date.now();
+      if (now - lastViolationRef.current < 1500) return;
+      lastViolationRef.current = now;
+      setViolations((v) => v + 1);
+      axios.post(`${API}/cbt/siswa/event`, null, { params: { tipe, ujian_id: selected?.ujian_id } }).catch(() => {});
+    };
+    const onVis = () => { if (document.hidden) catat("tab_switch"); };
+    const onBlur = () => catat("blur");
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("blur", onBlur);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("blur", onBlur); };
+  }, [stage, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const verifikasiToken = async () => {
+    if (!token.trim()) return showToast("Masukkan token dari pengawas");
+    setLoading(true);
+    try {
+      await axios.post(`${API}/cbt/siswa/verifikasi-token`, { token_kode: token, ujian_id: selected.ujian_id });
+      // Ambil soal
+      const { data } = await axios.get(`${API}/cbt/siswa/soal`, { params: { ujian_id: selected.ujian_id } });
+      setSoalData(data);
+      setJawaban(data.jawaban_tersimpan || {});
+      setIdxSoal(0);
+      setDeadline(Date.now() + data.sisa_detik * 1000);
+      setSisaDetik(data.sisa_detik);
+      setStage("ujian");
+    } catch (err) { showToast(errMsg(err, "Token tidak valid atau sudah kadaluarsa")); }
+    finally { setLoading(false); }
+  };
+
+  const simpanJawaban = async (soalId, jwb) => {
+    const baru = { ...jawaban, [soalId]: jwb };
+    setJawaban(baru);
+    axios.post(`${API}/cbt/siswa/jawab`, { ujian_id: selected.ujian_id, soal_id: soalId, jawaban: jwb }).catch(() => {});
+  };
+
+  const selesaiUjian = async () => {
+    try {
+      await axios.post(`${API}/cbt/siswa/selesai`, null, { params: { ujian_id: selected.ujian_id } });
+    } catch { /* abaikan jika sudah selesai */ }
+    setStage("selesai");
+  };
+
+  const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  const soal = soalData?.soal || [];
+  const soalAktif = soal[idxSoal];
+  const sudahDijawab = soal.filter((s) => jawaban[s.id] !== undefined).length;
+
+  // --- STAGE: JADWAL ---
+  if (stage === "jadwal") return <div style={{ minHeight: "100vh", background: "#f8faf9", padding: "24px 16px" }}>
+    <div style={{ maxWidth: 600, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>Ujian CBT</div>
+          <h2 style={{ margin: 0, fontWeight: 800, fontSize: 22 }}>Jadwal Hari Ini</h2>
+          <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>Pilih mata pelajaran lalu masukkan token dari pengawas</div>
+        </div>
+        {onSelesai && <button className="secondary-button" style={{ fontSize: 13 }} onClick={onSelesai}>← Kembali</button>}
+      </div>
+      {loading && <p style={{ color: "#6b7280", padding: 16 }}>Memuat jadwal...</p>}
+      {!loading && !jadwal.length && <section className="panel" style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>
+        <ClipboardCheck size={36} style={{ marginBottom: 12, opacity: 0.4 }} />
+        <p>Tidak ada ujian yang dijadwalkan hari ini.</p>
+      </section>}
+      {!loading && jadwal.map((j) => {
+        const selesai = j.status === "selesai";
+        const sedang = j.status === "sedang";
+        return <section key={j.ujian_id} className="panel" style={{ marginBottom: 12, borderLeft: `4px solid ${selesai ? "#d1d5db" : sedang ? "#86efac" : "#176b4a"}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{j.mapel}</div>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>{j.jam_mulai} – {j.jam_selesai} · {j.durasi_menit} menit</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {selesai && <span style={{ fontSize: 12, background: "#f3f4f6", color: "#6b7280", padding: "4px 12px", borderRadius: 20 }}>✓ Selesai</span>}
+              {sedang && <span style={{ fontSize: 12, background: "#dcfce7", color: "#166534", padding: "4px 12px", borderRadius: 20 }}>● Sedang dikerjakan</span>}
+              {!selesai && <button className="primary-button" onClick={() => { setSelected(j); setToken(""); setStage("token"); }}>
+                {sedang ? "Lanjutkan →" : "Mulai Ujian →"}
+              </button>}
+            </div>
+          </div>
+        </section>;
+      })}
+    </div>
+  </div>;
+
+  // --- STAGE: INPUT TOKEN ---
+  if (stage === "token") return <div style={{ minHeight: "100vh", background: "#f8faf9", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div style={{ background: "#fff", borderRadius: 16, padding: "36px 32px", maxWidth: 420, width: "100%", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
+      <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <ClipboardCheck size={40} color="#176b4a" style={{ marginBottom: 12 }} />
+        <h2 style={{ margin: 0, fontWeight: 800, fontSize: 20 }}>{selected?.mapel}</h2>
+        <p style={{ color: "#6b7280", fontSize: 14, marginTop: 6 }}>Masukkan token dari pengawas untuk memulai ujian</p>
+      </div>
+      <label className="field" style={{ marginBottom: 20 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 8, display: "block" }}>Token Ujian</span>
+        <input
+          value={token}
+          onChange={(e) => setToken(e.target.value.toUpperCase())}
+          placeholder="A3F9D1"
+          maxLength={6}
+          autoFocus
+          style={{ fontSize: 28, letterSpacing: 10, textAlign: "center", fontWeight: 800, fontFamily: "monospace", border: "2px solid #e5e7eb", borderRadius: 10, padding: "14px", width: "100%", boxSizing: "border-box", color: "#176b4a" }}
+          onKeyDown={(e) => e.key === "Enter" && verifikasiToken()}
+        />
+      </label>
+      <button className="primary-button" onClick={verifikasiToken} disabled={loading} style={{ width: "100%", justifyContent: "center", padding: "12px", fontSize: 15 }}>
+        <ClipboardCheck size={18} /> {loading ? "Memverifikasi..." : "Mulai Ujian"}
+      </button>
+      <button className="secondary-button" onClick={() => setStage("jadwal")} style={{ width: "100%", justifyContent: "center", marginTop: 10, padding: "10px" }}>
+        ← Kembali ke Jadwal
+      </button>
+    </div>
+  </div>;
+
+  // --- STAGE: UJIAN --- fullscreen tanpa nav
+  if (stage === "ujian" && soalAktif) return <div style={{ minHeight: "100vh", background: "#f0f4f2", display: "flex", flexDirection: "column" }}>
+    {/* Header fixed */}
+    <div style={{ background: "#176b4a", color: "#fff", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 100, boxShadow: "0 2px 8px rgba(0,0,0,0.15)" }}>
+      <div>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>{soalData?.mapel}</div>
+        <div style={{ fontSize: 12, opacity: 0.85 }}>Soal {idxSoal + 1} dari {soal.length} · {sudahDijawab} dijawab</div>
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        {violations > 0 && <span style={{ fontSize: 11, background: "#dc2626", color: "#fff", padding: "3px 8px", borderRadius: 20, fontWeight: 700 }}>⚠ {violations}x</span>}
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontWeight: 800, fontSize: 22, fontVariantNumeric: "tabular-nums", color: sisaDetik < 300 ? "#fca5a5" : "#fff" }}>{fmt(sisaDetik)}</div>
+          <div style={{ fontSize: 10, opacity: 0.75 }}>Sisa waktu</div>
+        </div>
+      </div>
+    </div>
+
+    {/* Progress bar */}
+    <div style={{ height: 4, background: "rgba(255,255,255,0.3)", backgroundColor: "#d1fae5" }}>
+      <div style={{ height: 4, background: "#176b4a", width: `${(sudahDijawab / soal.length) * 100}%`, transition: "width 0.4s" }} />
+    </div>
+
+    {/* Konten soal */}
+    <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", maxWidth: 700, margin: "0 auto", width: "100%" }}>
+      <div style={{ background: "#fff", borderRadius: 14, padding: "24px 20px", marginBottom: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#176b4a", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>Soal Nomor {idxSoal + 1}</div>
+        {soalAktif.gambar && <img src={soalAktif.gambar} alt="Gambar soal" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 14 }} />}
+        <p style={{ fontWeight: 600, fontSize: 16, marginBottom: 20, lineHeight: 1.7, color: "#111827" }}>{soalAktif.pertanyaan}</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {soalAktif.pilihan.map((p) => {
+            const dipilih = jawaban[soalAktif.id] === p.index;
+            return <button key={p.index} onClick={() => simpanJawaban(soalAktif.id, p.index)}
+              style={{ textAlign: "left", padding: "12px 18px", borderRadius: 10, border: `2px solid ${dipilih ? "#176b4a" : "#e5e7eb"}`, background: dipilih ? "#dcfce7" : "#fafafa", cursor: "pointer", fontWeight: dipilih ? 700 : 400, transition: "all 0.15s", fontSize: 15, color: dipilih ? "#166534" : "#374151" }}>
+              <span style={{ fontWeight: 800, marginRight: 10, color: dipilih ? "#166534" : "#9ca3af", minWidth: 20, display: "inline-block" }}>{String.fromCharCode(65 + p.index)}.</span>{p.teks}
+            </button>;
+          })}
+        </div>
+      </div>
+
+      {/* Tombol navigasi soal prev/next */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8 }}>
+        <button className="secondary-button" disabled={idxSoal === 0} onClick={() => setIdxSoal((i) => i - 1)} style={{ flex: 1 }}>
+          ← Sebelumnya
+        </button>
+        {idxSoal < soal.length - 1
+          ? <button className="primary-button" onClick={() => setIdxSoal((i) => i + 1)} style={{ flex: 1 }}>
+              Selanjutnya →
+            </button>
+          : <button onClick={() => { if (window.confirm(`Anda sudah menjawab ${sudahDijawab} dari ${soal.length} soal.\nYakin ingin mengumpulkan jawaban?`)) selesaiUjian(); }}
+              style={{ flex: 1, background: "#dc2626", color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+              Kumpulkan Jawaban ✓
+            </button>
+        }
+      </div>
+    </div>
+
+    {/* Navigator nomor soal - sticky di bawah */}
+    <div style={{ background: "#fff", borderTop: "1px solid #e5e7eb", padding: "12px 16px", position: "sticky", bottom: 0, boxShadow: "0 -2px 10px rgba(0,0,0,0.06)" }}>
+      <div style={{ fontSize: 11, color: "#6b7280", fontWeight: 600, marginBottom: 8, textAlign: "center" }}>
+        NAVIGATOR SOAL — <span style={{ color: "#166534" }}>■ Dijawab</span> · <span style={{ color: "#9ca3af" }}>■ Belum dijawab</span> · <span style={{ color: "#176b4a" }}>■ Soal aktif</span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", maxHeight: 120, overflowY: "auto" }}>
+        {soal.map((s, i) => {
+          const aktif = i === idxSoal;
+          const dijawab = jawaban[s.id] !== undefined;
+          return <button key={s.id} onClick={() => setIdxSoal(i)}
+            title={`Soal ${i + 1}${dijawab ? " (sudah dijawab)" : " (belum dijawab)"}`}
+            style={{
+              width: 36, height: 36, borderRadius: 8, border: aktif ? "2px solid #176b4a" : "2px solid transparent",
+              cursor: "pointer", fontWeight: 700, fontSize: 13,
+              background: aktif ? "#176b4a" : dijawab ? "#16a34a" : "#e5e7eb",
+              color: aktif || dijawab ? "#fff" : "#374151",
+              boxShadow: aktif ? "0 0 0 3px rgba(23,107,74,0.3)" : "none",
+              transition: "all 0.15s",
+            }}>
+            {i + 1}
+          </button>;
+        })}
+      </div>
+    </div>
+  </div>;
+
+  // --- STAGE: SELESAI --- fullscreen konfirmasi, lalu kembali ke portal
+  if (stage === "selesai") return <div style={{ minHeight: "100vh", background: "#f0f4f2", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div style={{ background: "#fff", borderRadius: 20, padding: "48px 32px", maxWidth: 440, width: "100%", textAlign: "center", boxShadow: "0 8px 32px rgba(0,0,0,0.10)" }}>
+      <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#dcfce7", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+        <Check size={40} color="#166534" />
+      </div>
+      <h2 style={{ fontWeight: 800, fontSize: 22, marginBottom: 8, color: "#111827" }}>Ujian Selesai!</h2>
+      <p style={{ color: "#374151", fontSize: 15, marginBottom: 4 }}>Terima kasih, <strong>{user.name}</strong>.</p>
+      <p style={{ color: "#6b7280", fontSize: 14, marginBottom: 28 }}>Jawaban ujian <strong>{selected?.mapel}</strong> telah berhasil dikumpulkan. Nilai akan diumumkan oleh panitia CBT.</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* Cek apakah masih ada ujian lain hari ini yang belum selesai */}
+        {jadwal.some((j) => j.status !== "selesai" && j.ujian_id !== selected?.ujian_id) && (
+          <button className="primary-button" style={{ justifyContent: "center" }} onClick={() => { setStage("jadwal"); loadJadwal(); }}>
+            Kerjakan Ujian Lain
+          </button>
+        )}
+        <button className="secondary-button" style={{ justifyContent: "center" }} onClick={() => { setStage("jadwal"); loadJadwal(); }}>
+          Lihat Jadwal Ujian
+        </button>
+        <button className="secondary-button" style={{ justifyContent: "center", color: "#176b4a", fontWeight: 700 }} onClick={() => onSelesai && onSelesai()}>
+          Kembali ke Portal Siswa →
+        </button>
+      </div>
+    </div>
+  </div>;
+
+  return null;
 }
 
 function SiswaBiodata({ showToast, studentId }) {
@@ -3287,13 +3753,20 @@ function SiswaApp({ user, showToast, toast, onLogout }) {
   const [jabatan, setJabatan] = useState(null); // null = belum dimuat, "" = tidak ada jabatan, "Sekretaris" | "Bendahara"
   const [className, setClassName] = useState(null);
 
+  const [punyaAksesCBT, setPunyaAksesCBT] = useState(false);
+
   useEffect(() => {
-    axios.get(`${API}/siswa/dashboard`)
-      .then(({ data }) => { setClassName(data.class_name || null); })
-      .catch(() => {});
-    axios.get(`${API}/jabatan-kelas/saya`)
-      .then(({ data }) => setJabatan(data.jabatan || ""))
-      .catch(() => setJabatan(""));
+    // Load paralel: dashboard siswa, jabatan, dan status akses CBT
+    Promise.allSettled([
+      axios.get(`${API}/siswa/dashboard`),
+      axios.get(`${API}/jabatan-kelas/saya`),
+      axios.get(`${API}/cbt/siswa/status`),
+    ]).then(([dashRes, jabRes, cbtRes]) => {
+      if (dashRes.status === "fulfilled") setClassName(dashRes.value.data.class_name || null);
+      if (jabRes.status === "fulfilled") setJabatan(jabRes.value.data.jabatan || "");
+      else setJabatan("");
+      if (cbtRes.status === "fulfilled") setPunyaAksesCBT(cbtRes.value.data.punya_akses === true);
+    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isSekretaris = jabatan === "Sekretaris";
@@ -3302,18 +3775,32 @@ function SiswaApp({ user, showToast, toast, onLogout }) {
 
   const siswaNav = [
     ...SISWA_NAV,
-    ...(hasJabatan ? [{ id: "absensi-kelas", label: isSekretaris ? "Absen Kelas" : "Absen Kelas", icon: ClipboardList }] : []),
-    ...(hasJabatan ? [{ id: "uang-kas", label: "Uang Kas", icon: Wallet }] : []),
+    // CBT muncul otomatis jika TU mengaktifkan akses
+    ...(punyaAksesCBT ? [{ id: "cbt", label: "Ujian CBT", icon: ClipboardCheck }] : []),
+    // Sekretaris → hanya Absensi Kelas
+    ...(isSekretaris ? [{ id: "absensi-kelas", label: "Absen Kelas", icon: ClipboardList }] : []),
+    // Bendahara → hanya Uang Kas
+    ...(isBendahara ? [{ id: "uang-kas", label: "Uang Kas", icon: Wallet }] : []),
   ];
+
+  // Saat ujian berlangsung: tampilkan fullscreen CBT tanpa nav/shell
+  if (active === "cbt" && punyaAksesCBT) {
+    return <SiswaCBTPortal
+      showToast={showToast}
+      user={user}
+      onSelesai={() => setActive("dashboard")} // kembali ke dashboard setelah selesai
+    />;
+  }
 
   return <MobileShell subtitle="Portal Siswa" roleLabel={hasJabatan ? `Siswa · ${jabatan}` : "Siswa"} user={user} navItems={siswaNav} active={active} onNavClick={setActive} onLogout={onLogout} toast={toast}>
     {active === "dashboard" && <SiswaDashboard showToast={showToast} user={user} />}
     {active === "biodata" && <SiswaBiodata showToast={showToast} studentId={user.student_id} />}
     {active === "kartu" && <KartuPelajarPage showToast={showToast} studentId={user.student_id} />}
     {active === "nilai" && <SiswaNilai showToast={showToast} studentName={user.name} />}
-    {active === "cbt" && <SiswaCBTInfo />}
-    {active === "absensi-kelas" && hasJabatan && className && <DailyAttendanceAbsen showToast={showToast} className={className} canEditAlways={isSekretaris} />}
-    {active === "uang-kas" && hasJabatan && className && <UangKasPage showToast={showToast} className={className} canEdit={isSekretaris || isBendahara} />}
+    {/* Sekretaris: hanya absensi kelas */}
+    {active === "absensi-kelas" && isSekretaris && className && <DailyAttendanceAbsen showToast={showToast} className={className} canEditAlways />}
+    {/* Bendahara: hanya uang kas */}
+    {active === "uang-kas" && isBendahara && className && <UangKasPage showToast={showToast} className={className} canEdit />}
   </MobileShell>;
 }
 
@@ -3595,7 +4082,7 @@ function KepsekStatistik({ showToast, classes }) {
 }
 
 function Root() {
-  return window.location.pathname.startsWith("/cbt") ? <CBTPortal /> : <App />;
+  return <App />;
 }
 
 export default Root;
